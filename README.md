@@ -14,7 +14,7 @@ JSON Forge 是一款面向 macOS 和 Windows 的轻量 JSON 工作台。它使�
 
 ## 开发
 
-需要 Node.js 20+、npm、Rust stable 和 Tauri 2 对应的平台工具链。
+需要 Node.js 24+、npm、Rust stable 和 Tauri 2 对应的平台工具链。仓库提供 `.nvmrc`，使用 nvm 时可执行 `nvm use` 切换到项目版本。
 
 - macOS：安装 Xcode Command Line Tools。
 - Windows：安装 Microsoft C++ Build Tools 与 WebView2 Runtime，并使用 Rust MSVC 工具链。
