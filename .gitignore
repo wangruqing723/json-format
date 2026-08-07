@@ -12,6 +12,7 @@ vite.config.d.ts
 # Local QA artifacts
 .playwright-cli/
 output/playwright/
+.codegraph/
 
 # Local environment and OS files
 .env
