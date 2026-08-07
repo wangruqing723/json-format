@@ -1,0 +1,21 @@
+# Dependencies and frontend build output
+node_modules/
+dist/
+
+# Tauri and TypeScript generated output
+src-tauri/target/
+src-tauri/gen/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Local QA artifacts
+.playwright-cli/
+output/playwright/
+
+# Local environment and OS files
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
