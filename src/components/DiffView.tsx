@@ -1,7 +1,7 @@
-import { ArrowLeftRight, Columns2 } from 'lucide-react';
 import { diffLines } from 'diff';
 import { useMemo } from 'react';
 import type { JsonDocument } from '../types';
+import { Icon } from './Icon';
 
 type DiffRowKind = 'same' | 'changed' | 'added' | 'removed';
 
@@ -19,6 +19,13 @@ interface DiffViewProps {
   rightId: string;
   onChangeSide: (side: 'left' | 'right', id: string) => void;
   onSwap: () => void;
+  onEdit?: (id: string, content: string) => void;
+}
+
+const STRUCTURED_VIEW_LIMIT = 5 * 1024 * 1024;
+
+function byteLength(value: string) {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function changeLines(value: string) {
@@ -67,7 +74,7 @@ export function buildDiffRows(left: string, right: string): DiffRow[] {
   }));
 }
 
-function DiffPane({ side, title, rows }: { side: 'left' | 'right'; title: string; rows: DiffRow[] }) {
+function DiffPane({ side, title, content, rows, onEdit, readOnly }: { side: 'left' | 'right'; title: string; content: string; rows: DiffRow[]; onEdit?: (content: string) => void; readOnly: boolean }) {
   const isLeft = side === 'left';
   return (
     <section className={`diff-pane diff-pane--${side}`} aria-label={`${isLeft ? '左侧（窄屏上方）' : '右侧（窄屏下方）'}：${title}`}>
@@ -76,6 +83,14 @@ function DiffPane({ side, title, rows }: { side: 'left' | 'right'; title: string
         <span className="diff-side-mobile">{isLeft ? '上方' : '下方'}</span>
         <strong>{title}</strong>
       </header>
+      <textarea
+        className="diff-editor"
+        value={content}
+        onChange={(event) => onEdit?.(event.target.value)}
+        readOnly={readOnly}
+        aria-label={`${title} JSON 编辑器`}
+        title={readOnly ? '文档超过 5 MB，Diff 编辑已禁用' : '编辑此侧 JSON'}
+      />
       <div className="diff-code" role="list" aria-label={`${title} 差异行`}>
         {rows.map((row, index) => {
           const content = isLeft ? row.left : row.right;
@@ -100,9 +115,10 @@ function DiffPane({ side, title, rows }: { side: 'left' | 'right'; title: string
   );
 }
 
-export function DiffView({ documents, leftId, rightId, onChangeSide, onSwap }: DiffViewProps) {
+export function DiffView({ documents, leftId, rightId, onChangeSide, onSwap, onEdit }: DiffViewProps) {
   const left = documents.find((document) => document.id === leftId) ?? documents[0];
   const right = documents.find((document) => document.id === rightId) ?? documents[1] ?? documents[0];
+  const readOnly = Boolean(left && right && (byteLength(left.content) > STRUCTURED_VIEW_LIMIT || byteLength(right.content) > STRUCTURED_VIEW_LIMIT));
   const rows = useMemo(() => left && right ? buildDiffRows(left.content, right.content) : [], [left, right]);
   const stats = useMemo(() => rows.reduce((result, row) => {
     if (row.kind === 'added') result.additions++;
@@ -115,7 +131,7 @@ export function DiffView({ documents, leftId, rightId, onChangeSide, onSwap }: D
   if (!left || !right) {
     return (
       <div className="view-empty">
-        <Columns2 size={28} />
+        <Icon name="compare" size={28} />
         <strong>至少需要两个标签</strong>
         <span>新建或打开另一个 JSON 文档后即可比较。</span>
       </div>
@@ -145,13 +161,13 @@ export function DiffView({ documents, leftId, rightId, onChangeSide, onSwap }: D
           <span className="diff-removed">-{stats.deletions} 删除</span>
           <span>{stats.unchanged} 未变</span>
           <button className="icon-button" type="button" onClick={onSwap} data-tooltip="交换左右文档" aria-label="交换左右文档">
-            <ArrowLeftRight size={15} />
+            <Icon name="swap_horiz" size={15} />
           </button>
         </div>
       </header>
       <div className="diff-editors">
-        <DiffPane side="left" title={left.title} rows={rows} />
-        <DiffPane side="right" title={right.title} rows={rows} />
+        <DiffPane side="left" title={left.title} content={left.content} rows={rows} readOnly={readOnly} onEdit={(content) => onEdit?.(left.id, content)} />
+        <DiffPane side="right" title={right.title} content={right.content} rows={rows} readOnly={readOnly} onEdit={(content) => onEdit?.(right.id, content)} />
       </div>
     </section>
   );

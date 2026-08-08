@@ -99,3 +99,53 @@ jobs:
           path: ${{ matrix.paths }}
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: desktop
+    runs-on: ubuntu-latest
+
+    # 仅本 job 需要写权限，用于创建 release 并上传安装包。
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download platform bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: json-forge-*
+          merge-multiple: true
+          path: installers
+
+      - name: List downloaded bundles
+        run: find installers -type f -print
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: JSON Forge ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            installers/**/*.dmg
+            installers/**/*.app.zip
+            installers/**/*.msi
+            installers/**/*.exe
+          body: |
+            JSON Forge ${{ github.ref_name }} 桌面安装包。
+
+            | 平台 | 文件 |
+            | --- | --- |
+            | macOS (Intel + Apple Silicon) | `.dmg` 安装镜像，或 `.app.zip` 直接解压运行 |
+            | Windows x64 | `.msi` 安装包，或 NSIS `.exe`（安装到当前用户） |
+
+            ## 安装包未签名
+
+            这些产物没有经过 Apple Developer ID 签名与公证，也没有 Windows
+            Authenticode 签名，因此系统会拦截：
+
+            - macOS：首次打开会提示无法验证开发者。在 Finder 里右键点击应用选「打开」，
+              或执行 `xattr -dr com.apple.quarantine "/Applications/JSON Forge.app"`。
+            - Windows：SmartScreen 会提示「未知发布者」，点「更多信息」→「仍要运行」。

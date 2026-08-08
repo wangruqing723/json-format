@@ -1,12 +1,25 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommandPalette } from './CommandPalette';
+import { ConfirmDialog } from './ConfirmDialog';
 import { buildDiffRows, DiffView } from './DiffView';
 import { SettingsDialog } from './SettingsDialog';
+import { StructurePanel } from './StructurePanel';
+import { ICON_CODEPOINTS } from './Icon';
 import { TreeView } from './TreeView';
 import type { JsonDocument } from '../types';
 
 afterEach(cleanup);
+
+function collectSourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? collectSourceFiles(path) : /\.tsx?$/.test(entry.name) ? [path] : [];
+  });
+}
 
 function documentFixture(id: string, title: string, content: string): JsonDocument {
   return {
@@ -76,7 +89,47 @@ describe('DiffView', () => {
   });
 });
 
+describe('StructurePanel', () => {
+  it('长值保留完整 title 且不会挤压键区', () => {
+    const value = 'x'.repeat(240);
+    const { container } = render(<StructurePanel source={JSON.stringify({ token: value })} />);
+    expect(screen.getByText('token')).toBeInTheDocument();
+    expect([...container.querySelectorAll<HTMLElement>('.structure-summary')].find((element) => element.title.includes(value))).toBeTruthy();
+  });
+
+  it('深层嵌套将缩进封顶，避免结构面板横向扩张', () => {
+    let source = '{"leaf":true}';
+    for (let index = 7; index >= 0; index--) source = `{"level${index}":${source}}`;
+    const { container } = render(<StructurePanel source={source} />);
+    let collapsed = screen.queryAllByRole('button', { name: /展开/ });
+    while (collapsed.length) {
+      fireEvent.click(collapsed[0]);
+      collapsed = screen.queryAllByRole('button', { name: /展开/ });
+    }
+    const rows = [...container.querySelectorAll<HTMLElement>('.structure-row')];
+    expect(rows.at(-1)?.style.getPropertyValue('--structure-indent')).toBe('48px');
+  });
+});
+
 describe('dialogs', () => {
+  it('自绘确认弹窗默认聚焦取消并支持 Esc 取消', async () => {
+    const onResolve = vi.fn();
+    render(<ConfirmDialog request={{ title: '确认操作', message: '请确认', tone: 'danger' }} onResolve={onResolve} />);
+    const dialog = screen.getByRole('alertdialog', { name: '确认操作' });
+    await waitFor(() => expect(screen.getByRole('button', { name: '取消' })).toHaveFocus());
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(onResolve).toHaveBeenCalledWith(false);
+  });
+
+  it('自绘确认弹窗 Enter 确认且点击遮罩取消', () => {
+    const onResolve = vi.fn();
+    const { container } = render(<ConfirmDialog request={{ title: '确认操作', message: '请确认' }} onResolve={onResolve} />);
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Enter' });
+    expect(onResolve).toHaveBeenCalledWith(true);
+    fireEvent.mouseDown(container.querySelector('.confirm-backdrop')!);
+    expect(onResolve).toHaveBeenCalledWith(false);
+  });
+
   it('命令面板可筛选、公布活动选项并执行命令', () => {
     const action = vi.fn();
     const onClose = vi.fn();
@@ -133,5 +186,22 @@ describe('dialogs', () => {
     rerender(<SettingsDialog open={false} settings={settings} onChange={vi.fn()} onClose={vi.fn()} />);
     expect(trigger).toHaveFocus();
     trigger.remove();
+  });
+});
+
+describe('Icon 映射', () => {
+  it('源码中的字面量图标名称都存在于 codepoint 映射表', () => {
+    const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+    const names = collectSourceFiles(sourceRoot).flatMap((file) => {
+      const source = readFileSync(file, 'utf8');
+      return [
+        ...source.matchAll(/<Icon\s+name\s*=\s*["']([^"']+)["']/g),
+        ...source.matchAll(/icon:\s*["']([^"']+)["']/g),
+      ].map((match) => match[1]);
+    });
+
+    for (const name of names) {
+      expect(ICON_CODEPOINTS[name as keyof typeof ICON_CODEPOINTS], name).toBeDefined();
+    }
   });
 });

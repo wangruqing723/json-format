@@ -1,6 +1,6 @@
-import { X } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import type { AppSettings } from '../types';
+import { Icon } from './Icon';
 
 interface SettingsDialogProps {
   open: boolean;
@@ -28,7 +28,7 @@ export function SettingsDialog({ open, settings, onChange, onClose }: SettingsDi
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
       <section
-        className="settings-dialog"
+        className="settings-dialog glass-panel-heavy"
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
@@ -55,7 +55,7 @@ export function SettingsDialog({ open, settings, onChange, onClose }: SettingsDi
             <h2 id="settings-title">设置</h2>
           </div>
           <button ref={closeRef} className="icon-button" type="button" onClick={onClose} aria-label="关闭设置">
-            <X size={17} />
+            <Icon name="close" size={17} />
           </button>
         </header>
 

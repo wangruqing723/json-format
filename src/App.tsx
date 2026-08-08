@@ -1,28 +1,17 @@
-import {
-  AlignJustify,
-  Braces,
-  Check,
-  ChevronDown,
-  CircleAlert,
-  Clipboard,
-  FilePlus2,
-  FolderSearch2,
-  FolderOpen,
-  MoreHorizontal,
-  PanelTopOpen,
-  Save,
-  Search,
-  Settings,
-  Sparkles,
-  WandSparkles,
-  X,
-  Zap,
-} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActionBar, type MoreAction } from './components/ActionBar';
+import { AboutDialog } from './components/AboutDialog';
+import { AppHeader, type WorkspaceView } from './components/AppHeader';
 import { CommandPalette, type AppCommand } from './components/CommandPalette';
+import { useConfirm } from './components/ConfirmDialog';
 import { DiffView } from './components/DiffView';
+import { Icon } from './components/Icon';
+import { InfoRow } from './components/InfoRow';
 import { JsonEditor, type JsonEditorHandle } from './components/JsonEditor';
+import { HistoryView, type HistoryRecord } from './components/HistoryView';
+import { Sidebar, type SidebarTab } from './components/Sidebar';
 import { SettingsDialog } from './components/SettingsDialog';
+import { StructurePanel } from './components/StructurePanel';
 import { TreeView } from './components/TreeView';
 import { isCurrentDocumentSnapshot } from './core/document-snapshot';
 import { JsonWorkerClient, WorkerCancelledError } from './services/worker-client';
@@ -33,10 +22,12 @@ import {
   revealFileInFolder,
   saveJsonFile,
   writeClipboardText,
+  isTauriRuntime,
   type OpenedJsonFile,
 } from './services/platform';
 import { isDocumentDirty, useWorkspaceStore } from './stores/workspace';
 import type { JsonDiagnostic, ProcessingMeta, WorkerOperation } from './types';
+import { formatBytes } from './utils/format';
 
 const AUTO_VALIDATE_LIMIT = 10 * 1024 * 1024;
 const STRUCTURED_VIEW_LIMIT = 5 * 1024 * 1024;
@@ -59,6 +50,22 @@ interface ToastState {
   id: number;
   message: string;
   tone: 'neutral' | 'success' | 'error';
+}
+
+/**
+ * 变换类操作被禁用的原因，null 表示当前可执行。
+ * 工具栏 tooltip、「更多」菜单禁用态、以及点击后的 toast 共用这一处判断，
+ * 避免三处各写一遍导致文案与实际状态不一致。
+ */
+export function transformBlockedReason(
+  diff: unknown,
+  historyOpen: boolean,
+  processing: boolean,
+): string | null {
+  if (historyOpen) return '历史视图下不可变换内容，请先切换到文本或树视图';
+  if (diff) return 'Diff 模式下不可变换内容，请先切换到文本或树视图';
+  if (processing) return '正在处理，请稍候';
+  return null;
 }
 
 const operationLabels: Record<WorkerOperation, string> = {
@@ -91,12 +98,6 @@ function byteLength(value: string) {
   return new TextEncoder().encode(value).byteLength;
 }
 
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 export function App() {
   const {
     documents,
@@ -104,6 +105,7 @@ export function App() {
     diff,
     settings,
     recentFiles,
+    history,
     persistenceIssue,
     newDocument,
     openDocument,
@@ -115,28 +117,33 @@ export function App() {
     setDiff,
     updateSettings,
     removeRecentFile,
+    addHistoryRecord,
+    clearHistory,
     flushPersistence,
   } = useWorkspaceStore();
   const activeDocument = documents.find((document) => document.id === activeDocumentId) ?? documents[0];
   const resolvedTheme = useResolvedTheme(settings.theme);
   const editorRef = useRef<JsonEditorHandle>(null);
-  const recentMenuRef = useRef<HTMLDivElement>(null);
-  const recentTriggerRef = useRef<HTMLButtonElement>(null);
-  const moreMenuRef = useRef<HTMLDivElement>(null);
-  const moreTriggerRef = useRef<HTMLButtonElement>(null);
   const actionWorkerRef = useRef<JsonWorkerClient | null>(null);
   const validationWorkerRef = useRef<JsonWorkerClient | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const tauriCloseApprovedRef = useRef(false);
   const [diagnostics, setDiagnostics] = useState<Record<string, JsonDiagnostic | null>>({});
   const [metadata, setMetadata] = useState<Record<string, ProcessingMeta | undefined>>({});
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
   const [processing, setProcessing] = useState<ProcessingState | null>(null);
+  // 正在后台校验的文档 id。状态栏据此区分「真的在校验」与「校验结果缺失」，
+  // 避免把「没有 metadata」一律说成「正在校验」。
+  const [validatingIds, setValidatingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingEdit, setPendingEdit] = useState<PendingEdit | null>(null);
   const [pendingReveal, setPendingReveal] = useState<{ documentId: string; offset: number } | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [openMenu, setOpenMenu] = useState<'recent' | 'more' | null>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('explorer');
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
 
   if (!actionWorkerRef.current) actionWorkerRef.current = new JsonWorkerClient();
   if (!validationWorkerRef.current) validationWorkerRef.current = new JsonWorkerClient();
@@ -148,42 +155,18 @@ export function App() {
   }, []);
 
   const openCommandPanel = useCallback(() => {
-    setOpenMenu(null);
     setSettingsOpen(false);
     setCommandOpen(true);
   }, []);
 
   const openSettingsPanel = useCallback(() => {
-    setOpenMenu(null);
     setCommandOpen(false);
     setSettingsOpen(true);
   }, []);
 
-  useEffect(() => {
-    if (!openMenu) return;
-    const menu = openMenu === 'recent' ? recentMenuRef.current : moreMenuRef.current;
-    const trigger = openMenu === 'recent' ? recentTriggerRef.current : moreTriggerRef.current;
-    const frame = window.requestAnimationFrame(() => menu?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
-    const closeFromOutside = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (!recentMenuRef.current?.parentElement?.contains(target) && !moreMenuRef.current?.parentElement?.contains(target)) {
-        setOpenMenu(null);
-      }
-    };
-    const closeFromKeyboard = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      setOpenMenu(null);
-      trigger?.focus();
-    };
-    window.addEventListener('pointerdown', closeFromOutside);
-    window.addEventListener('keydown', closeFromKeyboard);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener('pointerdown', closeFromOutside);
-      window.removeEventListener('keydown', closeFromKeyboard);
-    };
-  }, [openMenu]);
+  const handleOpenDocs = useCallback(() => {
+    setAboutOpen(true);
+  }, []);
 
   useEffect(() => {
     if (persistenceIssue) showToast(persistenceIssue.message, 'error');
@@ -191,12 +174,47 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme;
+    document.documentElement.classList.toggle('dark', resolvedTheme === 'dark');
+    document.documentElement.classList.toggle('light', resolvedTheme === 'light');
     document.documentElement.style.colorScheme = resolvedTheme;
     const themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-    themeMeta?.setAttribute('content', resolvedTheme === 'dark' ? '#17191d' : '#f4f5f7');
+    themeMeta?.setAttribute('content', resolvedTheme === 'dark' ? '#0a0a12' : '#f8f9fd');
   }, [resolvedTheme]);
 
   useEffect(() => {
+    if (isTauriRuntime()) {
+      let disposed = false;
+      let unlisten: (() => void) | undefined;
+      void import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
+        if (disposed) return;
+        const appWindow = getCurrentWindow();
+        unlisten = await appWindow.onCloseRequested(async (event) => {
+          flushPersistence();
+          if (tauriCloseApprovedRef.current) {
+            tauriCloseApprovedRef.current = false;
+            return;
+          }
+          const dirtyDocument = useWorkspaceStore.getState().documents.find(isDocumentDirty);
+          if (!dirtyDocument) return;
+          event.preventDefault();
+          const confirmed = await confirm({
+            title: '退出前保存提醒',
+            message: `“${dirtyDocument.title}”有未保存更改，仍要退出吗？`,
+            confirmLabel: '仍要退出',
+            tone: 'danger',
+          });
+          if (!confirmed) return;
+          tauriCloseApprovedRef.current = true;
+          flushPersistence();
+          await appWindow.close();
+        });
+      }).catch((error) => showToast(error instanceof Error ? error.message : '无法注册窗口关闭处理', 'error'));
+      return () => {
+        disposed = true;
+        unlisten?.();
+      };
+    }
+
     const beforeUnload = (event: BeforeUnloadEvent) => {
       flushPersistence();
       if (!useWorkspaceStore.getState().documents.some(isDocumentDirty)) return;
@@ -210,7 +228,18 @@ export function App() {
       window.removeEventListener('beforeunload', beforeUnload);
       window.removeEventListener('pagehide', pageHide);
     };
-  }, [flushPersistence]);
+  }, [confirm, flushPersistence, showToast]);
+
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    const allowNativeMenu = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"], .cm-editor, .cm-content')) return;
+      event.preventDefault();
+    };
+    document.addEventListener('contextmenu', allowNativeMenu);
+    return () => document.removeEventListener('contextmenu', allowNativeMenu);
+  }, []);
 
   const acceptOpenedFiles = useCallback((files: OpenedJsonFile[]) => {
     for (const file of files) openDocument(file);
@@ -234,7 +263,18 @@ export function App() {
       return;
     }
 
+    const markValidating = (active: boolean) => {
+      setValidatingIds((current) => {
+        if (active === current.has(documentId)) return current;
+        const next = new Set(current);
+        if (active) next.add(documentId);
+        else next.delete(documentId);
+        return next;
+      });
+    };
+
     const timer = window.setTimeout(() => {
+      markValidating(true);
       const task = validationWorkerRef.current!.process('validate', source);
       void task.response.then((response) => {
         if (!isCurrentDocumentSnapshot(useWorkspaceStore.getState().documents, documentId, source)) return;
@@ -249,11 +289,12 @@ export function App() {
         }
       }).catch((error) => {
         if (!(error instanceof WorkerCancelledError)) showToast('后台校验失败', 'error');
-      });
+      }).finally(() => markValidating(false));
     }, 320);
 
     return () => {
       window.clearTimeout(timer);
+      markValidating(false);
       validationWorkerRef.current?.cancelAll();
     };
   }, [activeDocument?.content, activeDocument?.id, showToast]);
@@ -288,15 +329,20 @@ export function App() {
     }
   }, [acceptOpenedFiles, showToast]);
 
+  const selectDocument = useCallback((id: string) => {
+    setActive(id);
+    setDiff(null);
+    setHistoryOpen(false);
+  }, [setActive, setDiff]);
+
   const handleOpenRecent = useCallback(async (path: string) => {
-    setOpenMenu(null);
     try {
-      openDocument(await readJsonPath(path));
+      selectDocument(openDocument(await readJsonPath(path)));
     } catch (error) {
       removeRecentFile(path);
       showToast(error instanceof Error ? error.message : '最近文件已不可用', 'error');
     }
-  }, [openDocument, removeRecentFile, showToast]);
+  }, [openDocument, removeRecentFile, selectDocument, showToast]);
 
   const handleSave = useCallback(async () => {
     const current = useWorkspaceStore.getState().documents.find(
@@ -304,6 +350,20 @@ export function App() {
     );
     if (!current) return;
     const savedContent = current.content;
+    if (!savedContent.trim()) {
+      showToast('文档为空，无内容可保存', 'neutral');
+      return;
+    }
+    const diagnostic = diagnostics[current.id];
+    if (byteLength(savedContent) <= AUTO_VALIDATE_LIMIT && diagnostic?.severity === 'error') {
+      const confirmed = await confirm({
+        title: '保存存在语法错误的 JSON',
+        message: '当前 JSON 存在语法错误,仍要保存吗?',
+        confirmLabel: '仍要保存',
+        tone: 'danger',
+      });
+      if (!confirmed) return;
+    }
     try {
       const saved = await saveJsonFile(savedContent, current.filePath, current.title);
       if (!saved) return;
@@ -313,24 +373,33 @@ export function App() {
     } catch (error) {
       showToast(error instanceof Error ? error.message : '保存文件失败', 'error');
     }
-  }, [markSaved, showToast]);
+  }, [confirm, diagnostics, markSaved, showToast]);
 
-  const requestClose = useCallback((id: string) => {
+  const requestClose = useCallback(async (id: string) => {
     const document = useWorkspaceStore.getState().documents.find((item) => item.id === id);
     if (!document) return;
-    if (isDocumentDirty(document) && !window.confirm(`“${document.title}”有未保存更改，仍要关闭吗？`)) return;
+    if (isDocumentDirty(document)) {
+      const confirmed = await confirm({
+        title: '关闭未保存文档',
+        message: `“${document.title}”有未保存更改，仍要关闭吗？`,
+        confirmLabel: '仍要关闭',
+        tone: 'danger',
+      });
+      if (!confirmed) return;
+    }
     if (processing?.documentId === id) actionWorkerRef.current?.cancel(processing.requestId);
     closeDocument(id);
-  }, [closeDocument, processing]);
+  }, [closeDocument, confirm, processing]);
 
   const runOperation = useCallback(async (operation: WorkerOperation, output: OutputMode = 'replace') => {
     const state = useWorkspaceStore.getState();
-    if (state.diff) {
-      showToast('Diff 模式下已禁用内容变换，请先切换到文本视图', 'neutral');
+    const blocked = transformBlockedReason(state.diff, historyOpen, Boolean(processing));
+    if (blocked) {
+      showToast(blocked, 'neutral');
       return;
     }
     const document = state.documents.find((item) => item.id === state.activeDocumentId);
-    if (!document || processing) return;
+    if (!document) return;
     const source = document.content;
 
     const options = {
@@ -339,8 +408,6 @@ export function App() {
     };
     const task = actionWorkerRef.current!.process(operation, source, options);
     setProcessing({ requestId: task.requestId, operation, documentId: document.id });
-    setOpenMenu(null);
-
     try {
       const response = await task.response;
       if (!isCurrentDocumentSnapshot(useWorkspaceStore.getState().documents, document.id, source)) {
@@ -352,11 +419,36 @@ export function App() {
         showToast(`${operationLabels[operation]}失败：${response.error.message}`, 'error');
         return;
       }
-      setMetadata((current) => ({ ...current, [document.id]: response.meta }));
-      setDiagnostics((current) => ({ ...current, [document.id]: response.meta.warnings?.[0] ?? null }));
+      // 转义/反转义的产物是裸字符串片段而非 JSON 文档，processor 对它们返回的
+      // valid: true 只表示「操作本身成功」，不代表结果是合法 JSON。
+      // 若照写进 metadata，状态栏会谎称「JSON 有效」，所以这两个操作交给后台校验去定性。
+      const describesJsonValidity = operation !== 'escape' && operation !== 'unescape';
+      if (describesJsonValidity) {
+        setMetadata((current) => ({ ...current, [document.id]: response.meta }));
+        setDiagnostics((current) => ({ ...current, [document.id]: response.meta.warnings?.[0] ?? null }));
+      } else {
+        setMetadata((current) => ({ ...current, [document.id]: undefined }));
+        setDiagnostics((current) => ({ ...current, [document.id]: null }));
+      }
       if (operation === 'validate' || operation === 'stats') {
-        showToast(response.meta.valid ? 'JSON 有效' : '文档为空', response.meta.valid ? 'success' : 'neutral');
+        // 用 meta.empty 直接判空，而非从 valid 反推：
+        // 二者当前等价，但语义独立，将来若出现「合法但有警告」之类的状态不会误报为空
+        showToast(
+          response.meta.valid ? 'JSON 有效' : response.meta.empty ? '文档为空' : 'JSON 无效',
+          response.meta.valid ? 'success' : 'neutral',
+        );
         return;
+      }
+
+      if (output !== 'new-tab') {
+        addHistoryRecord({
+          documentId: document.id,
+          documentTitle: document.title,
+          operation,
+          operationLabel: operationLabels[operation],
+          content: source,
+          bytes: byteLength(source),
+        });
       }
 
       if (output === 'new-tab') {
@@ -375,7 +467,7 @@ export function App() {
     } finally {
       setProcessing((current) => current?.requestId === task.requestId ? null : current);
     }
-  }, [newDocument, processing, setDiff, setView, showToast, updateContent]);
+  }, [addHistoryRecord, historyOpen, newDocument, processing, setDiff, setView, showToast, updateContent]);
 
   const handleFormat = useCallback(() => {
     void runOperation(useWorkspaceStore.getState().settings.sortKeys ? 'sort' : 'format');
@@ -386,7 +478,6 @@ export function App() {
       (document) => document.id === useWorkspaceStore.getState().activeDocumentId,
     );
     if (!current) return;
-    setOpenMenu(null);
     try {
       await writeClipboardText(current.content);
       showToast('已复制到剪贴板', 'success');
@@ -400,7 +491,6 @@ export function App() {
       (document) => document.id === useWorkspaceStore.getState().activeDocumentId,
     );
     if (!current?.filePath) return;
-    setOpenMenu(null);
     try {
       await revealFileInFolder(current.filePath);
     } catch (error) {
@@ -420,7 +510,7 @@ export function App() {
   const enterDiff = useCallback(() => {
     const state = useWorkspaceStore.getState();
     if (byteLength(state.documents.find((document) => document.id === state.activeDocumentId)?.content ?? '') > STRUCTURED_VIEW_LIMIT) {
-      showToast('大文档暂不启用 Diff，请先压缩数据范围', 'error');
+      showToast(`文档超过 ${formatBytes(STRUCTURED_VIEW_LIMIT)}，已停用 Diff。可先用「压缩」缩减体积或拆分后再比较`, 'neutral');
       return;
     }
     if (state.documents.length < 2) {
@@ -433,16 +523,71 @@ export function App() {
   }, [showToast]);
 
   const setTextOrTreeView = useCallback((view: 'text' | 'tree') => {
+    setHistoryOpen(false);
     const current = useWorkspaceStore.getState();
     const document = current.documents.find((item) => item.id === current.activeDocumentId);
     if (!document) return;
     if (view === 'tree' && byteLength(document.content) > STRUCTURED_VIEW_LIMIT) {
-      showToast('大文档暂不启用树视图', 'error');
+      showToast(`文档超过 ${formatBytes(STRUCTURED_VIEW_LIMIT)}，已停用树视图，可继续在文本视图中编辑`, 'neutral');
       return;
     }
     current.setDiff(null);
     current.setView(document.id, view);
   }, [showToast]);
+
+  const changeView = useCallback((view: WorkspaceView) => {
+    if (view === 'history') {
+      setHistoryOpen(true);
+      return;
+    }
+    setHistoryOpen(false);
+    if (view === 'diff') enterDiff();
+    else setTextOrTreeView(view);
+  }, [enterDiff, setTextOrTreeView]);
+
+  const restoreHistory = useCallback(async (record: HistoryRecord) => {
+    if (record.content === null) return;
+    const state = useWorkspaceStore.getState();
+    const target = state.documents.find((document) => document.id === record.documentId);
+    let targetId = record.documentId;
+    if (target) {
+      if (isDocumentDirty(target) && target.content !== record.content) {
+        const confirmed = await confirm({
+          title: '覆盖未保存内容',
+          message: `“${target.title}”有未保存更改，恢复将覆盖当前内容，仍要继续吗？`,
+          confirmLabel: '仍要恢复',
+          tone: 'danger',
+        });
+        if (!confirmed) return;
+      }
+      state.addHistoryRecord({
+        documentId: target.id,
+        documentTitle: target.title,
+        operation: 'restore',
+        operationLabel: '恢复',
+        content: target.content,
+        bytes: byteLength(target.content),
+      });
+      state.updateContent(target.id, record.content);
+      state.setActive(target.id);
+    } else {
+      targetId = state.newDocument(record.content, `${record.documentTitle} · 恢复`);
+    }
+    state.setDiff(null);
+    state.setView(targetId, 'text');
+    setHistoryOpen(false);
+    showToast('已恢复历史快照', 'success');
+  }, [confirm, showToast]);
+
+  const handleClearHistory = useCallback(async () => {
+    const confirmed = await confirm({
+      title: '清空操作历史',
+      message: '确定要清空全部操作历史吗？',
+      confirmLabel: '清空历史',
+      tone: 'danger',
+    });
+    if (confirmed) clearHistory();
+  }, [clearHistory, confirm]);
 
   const revealDiagnostic = useCallback((diagnostic: JsonDiagnostic) => {
     const state = useWorkspaceStore.getState();
@@ -455,7 +600,7 @@ export function App() {
     { id: 'new', label: '新建文档', keywords: 'new', shortcut: 'Ctrl/⌘ N', action: () => newDocument() },
     { id: 'open', label: '打开文件', keywords: 'open', shortcut: 'Ctrl/⌘ O', action: () => void handleOpen() },
     { id: 'save', label: '保存当前文档', keywords: 'save', shortcut: 'Ctrl/⌘ S', action: () => void handleSave() },
-    ...(!diff ? [
+    ...(!diff && !historyOpen ? [
       { id: 'format', label: '格式化 JSON', keywords: 'format beautify', shortcut: 'Shift Alt F', action: handleFormat },
       { id: 'minify', label: '压缩 JSON', keywords: 'minify', action: () => void runOperation('minify') },
       { id: 'sort', label: '递归排序键', keywords: 'sort key', action: () => void runOperation('sort') },
@@ -466,7 +611,7 @@ export function App() {
     { id: 'tree', label: '切换到树视图', keywords: 'tree', action: () => setTextOrTreeView('tree') },
     { id: 'diff', label: '打开 JSON Diff', keywords: 'compare', action: enterDiff },
     { id: 'settings', label: '打开设置', keywords: 'preferences theme', action: openSettingsPanel },
-  ], [diff, enterDiff, handleFormat, handleOpen, handleSave, newDocument, openSettingsPanel, runOperation, setTextOrTreeView]);
+  ], [diff, enterDiff, handleFormat, handleOpen, handleSave, historyOpen, newDocument, openSettingsPanel, runOperation, setTextOrTreeView]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -503,114 +648,111 @@ export function App() {
   const diffLeft = diff ? documents.find((document) => document.id === diff.leftId) : null;
   const diffRight = diff ? documents.find((document) => document.id === diff.rightId) : null;
   const displayTitle = diffLeft && diffRight ? `${diffLeft.title} ↔ ${diffRight.title}` : activeDocument.title;
-  const canSearch = !diff && activeDocument.view === 'text';
-  const transformsDisabled = Boolean(processing) || Boolean(diff);
+  const canSearch = !diff && !historyOpen && activeDocument.view === 'text';
+  const transformsDisabled = Boolean(processing) || Boolean(diff) || historyOpen;
+  const activeView: WorkspaceView = historyOpen ? 'history' : diff ? 'diff' : activeDocument.view;
+  const activeStatus = {
+    tone: activeDiagnostic?.severity === 'error'
+      ? 'error' as const
+      : activeDiagnostic?.severity === 'warning'
+        ? 'warning' as const
+        : activeDocument.content.trim() && activeMeta?.valid
+          ? 'success' as const
+          : 'info' as const,
+    text: activeDiagnostic
+      ? activeDiagnostic.message
+      : activeDocument.content.trim()
+        ? activeBytes > AUTO_VALIDATE_LIMIT
+          ? '等待显式校验'
+          : activeMeta?.valid
+            ? 'JSON 有效'
+            // 只在确有后台任务在跑时才说「正在校验」；否则说明校验结果尚未产生
+            // （被取消、或上游未触发），说「等待校验」才不误导。
+            : validatingIds.has(activeDocument.id)
+              ? '正在校验'
+              : '等待校验'
+        : '等待输入',
+    ...(activeDiagnostic ? { line: activeDiagnostic.line, column: activeDiagnostic.column } : {}),
+  };
+  const moreActions: MoreAction[] = [
+    { id: 'escape', label: '转义字符串', icon: 'bolt', disabled: transformsDisabled, onSelect: () => void runOperation('escape') },
+    { id: 'unescape', label: '反转义字符串', icon: 'bolt', disabled: transformsDisabled, onSelect: () => void runOperation('unescape') },
+    { id: 'copy', label: '复制活动标签全文', icon: 'content_paste', onSelect: () => void copyCurrent() },
+    ...(activeDocument.filePath ? [{ id: 'reveal', label: '在文件管理器中显示', icon: 'folder_open', onSelect: () => void revealCurrentFile() }] : []),
+    { id: 'format-new-tab', label: '格式化到新标签', icon: 'note_add', disabled: transformsDisabled, onSelect: () => void runOperation('format', 'new-tab') },
+    { id: 'minify-new-tab', label: '压缩到新标签', icon: 'note_add', disabled: transformsDisabled, onSelect: () => void runOperation('minify', 'new-tab') },
+  ];
 
   return (
     <div className="app-shell">
-      <header className="titlebar">
-        <div className="brand" aria-label="JSON Forge">
-          <span className="brand-mark"><Braces size={17} /></span>
-          <strong>JSON Forge</strong>
-        </div>
-        <div className="title-file" title={diff ? displayTitle : activeDocument.filePath ?? activeDocument.title}>
-          {displayTitle}{!diff && activeDirty ? ' •' : ''}
-        </div>
-        <div className="title-actions">
-          <button className={`icon-button${canSearch ? '' : ' is-disabled'}`} type="button" aria-disabled={!canSearch} onClick={() => canSearch && editorRef.current?.openSearch()} data-tooltip={canSearch ? '查找 (Ctrl/⌘ F)' : '仅文本视图可查找'} aria-label="在当前文档中查找">
-            <Search size={16} />
-          </button>
-          <button className="icon-button" type="button" onClick={openCommandPanel} data-tooltip="命令面板 (Ctrl/⌘ K)" aria-label="打开命令面板">
-            <PanelTopOpen size={16} />
-          </button>
-          <button className="icon-button" type="button" onClick={openSettingsPanel} data-tooltip="设置" aria-label="打开设置">
-            <Settings size={16} />
-          </button>
-        </div>
-      </header>
+      <AppHeader
+        activeView={activeView}
+        onChangeView={changeView}
+        title={diff ? displayTitle : activeDocument.filePath ?? activeDocument.title}
+        dirty={!diff && activeDirty}
+        canSearch={canSearch}
+        onSearch={() => canSearch && editorRef.current?.openSearch()}
+        onOpenCommandPalette={openCommandPanel}
+        onOpenSettings={openSettingsPanel}
+        theme={resolvedTheme}
+        onToggleTheme={() => updateSettings({ theme: resolvedTheme === 'dark' ? 'light' : 'dark' })}
+      />
 
-      <nav className="tabs-row" aria-label="文档标签">
+      <div className="app-main-row">
+        <Sidebar
+          activeTab={sidebarTab}
+          onChangeTab={setSidebarTab}
+          documents={documents}
+          activeDocumentId={activeDocument.id}
+          recentFiles={recentFiles}
+          onSelectDocument={selectDocument}
+          onOpenRecent={(path) => void handleOpenRecent(path)}
+          onNewDocument={() => newDocument()}
+          documentCount={documents.length}
+          processingLabel={processing ? operationLabels[processing.operation] : null}
+          persistenceIssue={persistenceIssue?.message ?? null}
+          onOpenDocs={handleOpenDocs}
+        />
+        <section className="center-workspace">
+          <nav className="tabs-row" aria-label="文档标签">
         <div className="tabs-scroll">
           {documents.map((document) => (
             <div key={document.id} className={document.id === activeDocument.id ? 'document-tab is-active' : 'document-tab'}>
-              <button type="button" className="tab-select" onClick={() => setActive(document.id)} title={document.filePath ?? document.title}>
+              <button type="button" className="tab-select" onClick={() => selectDocument(document.id)} title={document.filePath ?? document.title}>
                 <span className={isDocumentDirty(document) ? 'dirty-dot is-dirty' : 'dirty-dot'} />
                 <span>{document.title}</span>
               </button>
               <button className="tab-close" type="button" onClick={() => requestClose(document.id)} aria-label={`关闭 ${document.title}`}>
-                <X size={13} />
+                <Icon name="close" size={13} />
               </button>
             </div>
           ))}
         </div>
         <button className="new-tab-button icon-button" type="button" onClick={() => newDocument()} data-tooltip="新建 (Ctrl/⌘ N)" aria-label="新建文档">
-          <FilePlus2 size={15} />
+          <Icon name="note_add" size={15} />
         </button>
-      </nav>
+          </nav>
 
-      <div className="toolbar" role="toolbar" aria-label="JSON 工具">
-        <div className="toolbar-group file-actions">
-          <div className="split-button-wrap">
-            <button className="tool-button tool-button--compact" type="button" onClick={() => void handleOpen()} data-tooltip="打开 (Ctrl/⌘ O)" aria-label="打开 (Ctrl/⌘ O)">
-              <FolderOpen size={16} /><span>打开</span>
-            </button>
-            <button ref={recentTriggerRef} className="split-trigger icon-button" type="button" onClick={() => setOpenMenu((open) => open === 'recent' ? null : 'recent')} data-tooltip="最近文件" aria-label="最近文件" aria-haspopup="menu" aria-expanded={openMenu === 'recent'}>
-              <ChevronDown size={13} />
-            </button>
-            {openMenu === 'recent' && (
-              <div ref={recentMenuRef} className="popover recent-menu" role="menu" aria-label="最近文件">
-                <div className="popover-label">最近文件</div>
-                {recentFiles.length ? recentFiles.map((file) => (
-                  <button key={file.path} type="button" role="menuitem" onClick={() => void handleOpenRecent(file.path)} title={file.path}>{file.name}</button>
-                )) : <span className="popover-empty" role="status">暂无最近文件</span>}
-              </div>
-            )}
-          </div>
-          <button className="tool-button tool-button--compact" type="button" onClick={() => void handleSave()} data-tooltip="保存 (Ctrl/⌘ S)" aria-label="保存 (Ctrl/⌘ S)">
-            <Save size={16} /><span>保存</span>
-          </button>
-        </div>
-        <span className="toolbar-divider" />
-        <div className="toolbar-group transform-actions">
-          <button className={`tool-button tool-button--primary${transformsDisabled ? ' is-disabled' : ''}`} type="button" aria-disabled={transformsDisabled} onClick={handleFormat} data-tooltip={diff ? 'Diff 模式下不可变换' : '格式化 (Shift+Alt+F)'} aria-label="格式化 (Shift+Alt+F)">
-            <Sparkles size={16} /><span>格式化</span>
-          </button>
-          <button className={`tool-button${transformsDisabled ? ' is-disabled' : ''}`} type="button" aria-disabled={transformsDisabled} onClick={() => void runOperation('minify')} data-tooltip={diff ? 'Diff 模式下不可变换' : '移除无关空白'} aria-label="压缩 JSON">
-            <AlignJustify size={16} /><span>压缩</span>
-          </button>
-          <button className={`tool-button toolbar-secondary${transformsDisabled ? ' is-disabled' : ''}`} type="button" aria-disabled={transformsDisabled} onClick={() => void runOperation('sort')} data-tooltip={diff ? 'Diff 模式下不可变换' : '递归排序对象键'} aria-label="递归排序对象键">
-            <Braces size={16} /><span>键排序</span>
-          </button>
-          <button className={`tool-button toolbar-secondary${transformsDisabled ? ' is-disabled' : ''}`} type="button" aria-disabled={transformsDisabled} onClick={() => void runOperation('repair')} data-tooltip={diff ? 'Diff 模式下不可变换' : '使用确定性规则修复'} aria-label="使用确定性规则修复">
-            <WandSparkles size={16} /><span>修复</span>
-          </button>
-        </div>
-        <div className="toolbar-spacer" />
-        <div className="segmented-control view-switch" aria-label="视图模式">
-          <button type="button" className={!diff && activeDocument.view === 'text' ? 'is-active' : ''} aria-pressed={!diff && activeDocument.view === 'text'} onClick={() => setTextOrTreeView('text')}>文本</button>
-          <button type="button" className={!diff && activeDocument.view === 'tree' ? 'is-active' : ''} aria-pressed={!diff && activeDocument.view === 'tree'} onClick={() => setTextOrTreeView('tree')}>树</button>
-          <button type="button" className={diff ? 'is-active' : ''} aria-pressed={Boolean(diff)} onClick={enterDiff}>Diff</button>
-        </div>
-        <div className="more-wrap">
-          <button ref={moreTriggerRef} className="icon-button" type="button" onClick={() => setOpenMenu((open) => open === 'more' ? null : 'more')} data-tooltip="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded={openMenu === 'more'}>
-            <MoreHorizontal size={18} />
-          </button>
-          {openMenu === 'more' && (
-            <div ref={moreMenuRef} className="popover more-menu" role="menu" aria-label="更多操作">
-              <button type="button" role="menuitem" disabled={Boolean(diff)} onClick={() => void runOperation('escape')}><Zap size={14} />转义字符串</button>
-              <button type="button" role="menuitem" disabled={Boolean(diff)} onClick={() => void runOperation('unescape')}><Zap size={14} />反转义字符串</button>
-              <button type="button" role="menuitem" onClick={() => void copyCurrent()}><Clipboard size={14} />复制活动标签全文</button>
-              {activeDocument.filePath && <button type="button" role="menuitem" onClick={() => void revealCurrentFile()}><FolderSearch2 size={14} />在文件管理器中显示</button>}
-              <span className="menu-divider" />
-              <button type="button" role="menuitem" disabled={Boolean(diff)} onClick={() => void runOperation('format', 'new-tab')}><FilePlus2 size={14} />格式化到新标签</button>
-              <button type="button" role="menuitem" disabled={Boolean(diff)} onClick={() => void runOperation('minify', 'new-tab')}><FilePlus2 size={14} />压缩到新标签</button>
-            </div>
-          )}
-        </div>
-      </div>
+          <ActionBar
+        onOpen={() => void handleOpen()}
+        onSave={() => void handleSave()}
+        onFormat={handleFormat}
+        onMinify={() => void runOperation('minify')}
+        onSort={() => void runOperation('sort')}
+        onRepair={() => void runOperation('repair')}
+        transformsDisabled={transformsDisabled}
+        disabledReason={transformBlockedReason(diff, historyOpen, Boolean(processing))}
+        recentFiles={recentFiles}
+        onOpenRecent={(path) => void handleOpenRecent(path)}
+        status={activeStatus}
+        onRevealDiagnostic={activeDiagnostic ? () => revealDiagnostic(activeDiagnostic) : undefined}
+        moreActions={moreActions}
+          />
 
-      <main className="workspace">
-        {diff ? (
+          <main className="workspace">
+        {historyOpen ? (
+          <HistoryView history={history} onRestore={restoreHistory} onClear={() => void handleClearHistory()} />
+        ) : diff ? (
           <DiffView
             documents={documents}
             leftId={diff.leftId}
@@ -620,6 +762,7 @@ export function App() {
               setDiff({ ...diff, [side === 'left' ? 'leftId' : 'rightId']: id });
             }}
             onSwap={() => setDiff({ leftId: diff.rightId, rightId: diff.leftId })}
+            onEdit={(id, content) => updateContent(id, content)}
           />
         ) : activeDocument.view === 'tree' ? (
           <TreeView source={activeDocument.content} onCopy={handleTreeCopy} />
@@ -631,38 +774,32 @@ export function App() {
             theme={resolvedTheme}
             diagnostic={activeDiagnostic}
             onChange={(content) => {
+              // 内容未实际变化时直接跳过：清掉 metadata 却不触发重新校验，
+              // 会让状态永久停在「正在校验」（校验 effect 依赖 content，值相同不会重跑）。
+              if (content === activeDocument.content) return;
               setMetadata((current) => ({ ...current, [activeDocument.id]: undefined }));
               updateContent(activeDocument.id, content);
             }}
             onCursorChange={(line, column) => setCursor({ line, column })}
           />
         )}
-      </main>
+          </main>
 
-      <footer className="statusbar">
-        <div className={activeDiagnostic?.severity === 'error' ? 'status-validity is-error' : activeDiagnostic?.severity === 'warning' ? 'status-validity is-warning' : 'status-validity is-valid'} aria-live="polite">
-          {activeDiagnostic?.severity === 'error' ? <CircleAlert size={13} /> : <Check size={13} />}
-          <span>{activeDiagnostic
-            ? activeDiagnostic.message
-            : activeDocument.content.trim()
-              ? activeBytes > AUTO_VALIDATE_LIMIT
-                ? '等待显式校验'
-                : activeMeta?.valid
-                  ? 'JSON 有效'
-                  : '正在校验'
-              : '等待输入'}</span>
-          {activeDiagnostic && <button type="button" onClick={() => revealDiagnostic(activeDiagnostic)}>行 {activeDiagnostic.line}:{activeDiagnostic.column}</button>}
-        </div>
-        <div className="status-spacer" />
-        {persistenceIssue && <span className="status-warning" title={persistenceIssue.message}>会话内容未持久化</span>}
-        {activeBytes > AUTO_VALIDATE_LIMIT && <span className="status-warning">受限模式</span>}
-        {activeMeta?.stats && <span>{activeMeta.stats.nodes.toLocaleString()} 节点</span>}
-        <span>行 {cursor.line}，列 {cursor.column}</span>
-        <span>{formatBytes(activeBytes)}</span>
-        <span>{settings.indent === 'tab' ? 'Tab' : `${settings.indent} 空格`}</span>
-        <span>UTF-8</span>
-        {activeMeta && <span>{activeMeta.durationMs.toFixed(1)} ms</span>}
-      </footer>
+          {!historyOpen && <InfoRow
+        path={activeDocument.filePath ?? activeDocument.title}
+        cursor={cursor}
+        bytes={activeBytes}
+        nodeCount={activeMeta?.stats?.nodes ?? null}
+        indent={settings.indent}
+        durationMs={activeMeta?.durationMs ?? null}
+        restricted={activeBytes > AUTO_VALIDATE_LIMIT}
+        persistenceIssue={persistenceIssue?.message ?? null}
+          />}
+        </section>
+        {sidebarTab === 'schema' && activeView === 'text' && (
+          <StructurePanel source={activeDocument.content} oversized={activeBytes > STRUCTURED_VIEW_LIMIT} />
+        )}
+      </div>
 
       {processing && (
         <div className="processing-banner" role="status" aria-live="polite">
@@ -671,10 +808,17 @@ export function App() {
           <button type="button" onClick={() => actionWorkerRef.current?.cancel(processing.requestId)}>取消</button>
         </div>
       )}
-      {toast && <div key={toast.id} className={`toast toast--${toast.tone}`} role="status" aria-live="polite">{toast.message}</div>}
+      {toast && (
+        <div key={toast.id} className={`toast toast--${toast.tone}`} role="status" aria-live="polite">
+          <Icon name={toast.tone === 'success' ? 'check_circle' : toast.tone === 'error' ? 'error' : 'info'} size={16} className="toast-icon" />
+          <span>{toast.message}</span>
+        </div>
+      )}
 
       <CommandPalette open={commandOpen} commands={commands} onClose={() => setCommandOpen(false)} />
       <SettingsDialog open={settingsOpen} settings={settings} onChange={updateSettings} onClose={() => setSettingsOpen(false)} />
+      <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      {confirmDialog}
     </div>
   );
 }

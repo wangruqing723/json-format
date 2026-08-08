@@ -1,5 +1,5 @@
-import { Search, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Icon } from './Icon';
 
 export interface AppCommand {
   id: string;
@@ -52,7 +52,7 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
       <section
-        className="command-palette"
+        className="command-palette glass-panel-heavy"
         role="dialog"
         aria-modal="true"
         aria-label="命令面板"
@@ -86,7 +86,7 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
         }}
       >
         <div className="command-input-row">
-          <Search size={18} aria-hidden="true" />
+          <Icon name="search" size={18} />
           <label className="sr-only" htmlFor="command-query">搜索命令</label>
           <input
             id="command-query"
@@ -105,7 +105,7 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
             autoComplete="off"
           />
           <button className="icon-button" type="button" onClick={onClose} aria-label="关闭命令面板">
-            <X size={16} />
+            <Icon name="close" size={16} />
           </button>
         </div>
         <div id="command-listbox" className="command-list" role="listbox" aria-label="可用命令">

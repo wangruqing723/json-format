@@ -1,5 +1,6 @@
 import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
+import type { HistoryRecord } from '../components/HistoryView';
 import type {
   AppSettings,
   DocumentId,
@@ -12,6 +13,8 @@ import type {
 export const WORKSPACE_STORAGE_KEY = 'json-forge.workspace.v1';
 export const MAX_RECENT_FILES = 10;
 export const MAX_WORKSPACE_STORAGE_BYTES = 4 * 1024 * 1024;
+export const MAX_HISTORY_RECORDS = 20;
+export const MAX_HISTORY_SNAPSHOT_BYTES = 256 * 1024;
 
 export type WorkspacePersistenceIssueCode =
   | 'size-limit'
@@ -48,6 +51,7 @@ export interface OpenDocumentInput {
 
 export interface WorkspaceStore extends WorkspaceState {
   recentFiles: RecentFile[];
+  history: HistoryRecord[];
   persistenceIssue: WorkspacePersistenceIssue | null;
   newDocument: (content?: string, title?: string) => DocumentId;
   openDocument: (input: OpenDocumentInput) => DocumentId;
@@ -65,6 +69,8 @@ export interface WorkspaceStore extends WorkspaceState {
   updateSettings: (patch: Partial<AppSettings>) => void;
   addRecentFile: (path: string, name: string) => void;
   removeRecentFile: (path: string) => void;
+  addHistoryRecord: (input: Omit<HistoryRecord, 'id' | 'createdAt'>) => void;
+  clearHistory: () => void;
   flushPersistence: () => void;
 }
 
@@ -154,6 +160,7 @@ export function createWorkspaceStore(
       diff: initialDiff,
       settings,
       recentFiles: initialRecentFiles,
+      history: [],
       persistenceIssue: restored?.persistenceIssue ?? restorationIssue,
 
       newDocument: (content = '', title) => {
@@ -280,6 +287,18 @@ export function createWorkspaceStore(
         commit((state) => ({
           recentFiles: state.recentFiles.filter((file) => file.path !== path),
         }));
+      },
+
+      addHistoryRecord: (input) => {
+        const content = input.content !== null && utf8ByteLength(input.content) > MAX_HISTORY_SNAPSHOT_BYTES
+          ? null
+          : input.content;
+        const record: HistoryRecord = { ...input, content, id: createId(), createdAt: now() };
+        commit((state) => ({ history: [record, ...state.history].slice(0, MAX_HISTORY_RECORDS) }));
+      },
+
+      clearHistory: () => {
+        commit(() => ({ history: [] }));
       },
 
       flushPersistence,
@@ -520,6 +539,10 @@ function createPersistenceIssue(
 
 function estimateUtf16Bytes(value: string): number {
   return value.length * 2;
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function isPersistenceIssue(value: unknown): value is WorkspacePersistenceIssue {

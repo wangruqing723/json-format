@@ -1,7 +1,8 @@
-import { ChevronDown, ChevronRight, Copy, FileJson2, TriangleAlert } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { parseJson, type JsonNode } from '../core/json-parser';
 import { minifyJsonNode } from '../core/json-transform';
+import { propertyPath } from '../core/json-path';
+import { Icon } from './Icon';
 
 interface TreeViewProps {
   source: string;
@@ -19,13 +20,6 @@ interface TreeNodeProps {
 
 function isContainer(node: JsonNode) {
   return node.type === 'object' || node.type === 'array';
-}
-
-function propertyPath(parent: string, key: string, isArray: boolean) {
-  if (isArray) return `${parent}[${key}]`;
-  return /^[A-Za-z_$][\w$]*$/.test(key)
-    ? `${parent}.${key}`
-    : `${parent}[${JSON.stringify(key)}]`;
 }
 
 function summary(node: JsonNode) {
@@ -74,7 +68,7 @@ function TreeNode({ label, node, path, depth, ambiguousPath = false, onCopy }: T
             aria-expanded={expanded}
             aria-label={expanded ? `折叠 ${label}` : `展开 ${label}`}
           >
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            <Icon name={expanded ? 'expand_more' : 'chevron_right'} size={14} />
           </button>
         ) : <span className="tree-spacer" />}
         <button
@@ -94,7 +88,7 @@ function TreeNode({ label, node, path, depth, ambiguousPath = false, onCopy }: T
           aria-label={`复制 ${label} 的值`}
           onClick={() => onCopy(copyValue(node), '值')}
         >
-          <Copy size={13} />
+          <Icon name="content_copy" size={13} />
         </button>
       </div>
       {container && expanded && (
@@ -129,7 +123,7 @@ export function TreeView({ source, onCopy }: TreeViewProps) {
   if (parsed.error || !parsed.node) {
     return (
       <div className="view-empty" role="status">
-        <FileJson2 size={28} />
+        <Icon name="data_object" size={28} />
         <strong>树视图不可用</strong>
         <span>修正 JSON 错误后即可浏览节点。</span>
       </div>
@@ -140,7 +134,7 @@ export function TreeView({ source, onCopy }: TreeViewProps) {
     <div className="tree-view" aria-label="JSON 树">
       {parsed.hasDuplicates && (
         <div className="tree-warning" role="status">
-          <TriangleAlert size={14} />
+          <Icon name="warning" size={14} />
           <span>检测到重复键：全部值均保留显示，重复键路径复制已禁用。</span>
         </div>
       )}

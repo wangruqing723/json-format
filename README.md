@@ -54,6 +54,13 @@ npm run tauri -- build --bundles msi,nsis
 
 GitHub Actions 的 `CI and desktop installers` 工作流会在普通推送和拉取请求中运行前端测试与构建。推送到 `main`、推送版本标签（`v*`）或手动触发时，前端校验通过后还会在每个平台再次运行测试，再并行构建 macOS 通用包与 Windows x64 产物并保留 14 天。macOS 的 `.app` 会封装成保留权限和资源分支的 `.app.zip` 后上传。
 
+推送 `v*` 标签时会额外运行 `Publish GitHub release`：等两个平台都构建成功后，下载全部产物并创建同名 GitHub Release，把 `.dmg`、`.app.zip`、`.msi` 和 NSIS `.exe` 作为附件挂上。发布版本前需确保标签与 `package.json`、`src-tauri/tauri.conf.json` 及 `src-tauri/Cargo.toml` 中的版本号一致：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## 快捷键
 
 | 操作 | macOS | Windows |

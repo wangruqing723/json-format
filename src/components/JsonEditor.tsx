@@ -7,7 +7,7 @@ import {
 import { json } from '@codemirror/lang-json';
 import { bracketMatching, foldGutter, HighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language';
 import { Diagnostic, lintGutter, setDiagnostics } from '@codemirror/lint';
-import { searchKeymap } from '@codemirror/search';
+import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
 import { Compartment, EditorState, Transaction } from '@codemirror/state';
 import {
   drawSelection,
@@ -52,45 +52,53 @@ const themeCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 
 const lightTheme = EditorView.theme({
-  '&': { color: '#20252d', backgroundColor: '#ffffff' },
-  '.cm-content': { caretColor: '#1769e0' },
-  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#1769e0' },
-  '.cm-gutters': { backgroundColor: '#f7f8fa', color: '#5f6670', border: 'none' },
-  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#eef5ff' },
-  '.cm-selectionBackground, ::selection': { backgroundColor: '#cfe1ff !important' },
-  '.cm-matchingBracket': { backgroundColor: '#d9f3e2', outline: '1px solid #2f855a' },
+  '&': { color: '#261d20', backgroundColor: '#ffffff' },
+  '.cm-content': { caretColor: '#b80048' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#b80048' },
+  '.cm-gutters': { backgroundColor: '#ffffff', color: '#5c3f43', border: 'none' },
+  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#fdf0f4' },
+  '.cm-selectionBackground, ::selection': { backgroundColor: '#ffe9ef !important' },
+  '.cm-matchingBracket': { backgroundColor: '#d9f3e2', outline: '1px solid #006970' },
 });
 
 const darkTheme = EditorView.theme(
   {
-    '&': { color: '#e6e9ee', backgroundColor: '#17191d' },
-    '.cm-content': { caretColor: '#70a5ff' },
-    '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#70a5ff' },
-    '.cm-gutters': { backgroundColor: '#1c1f24', color: '#858c98', border: 'none' },
-    '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#202a38' },
-    '.cm-selectionBackground, ::selection': { backgroundColor: '#294f7e !important' },
-    '.cm-matchingBracket': { backgroundColor: '#244c36', outline: '1px solid #61c58a' },
-    '.cm-tooltip': { backgroundColor: '#252930', borderColor: '#3c424c' },
+    '&': { color: '#e8e0f0', backgroundColor: '#0a0a12' },
+    '.cm-content': { caretColor: '#00ffcc' },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#00ffcc' },
+    '.cm-gutters': { backgroundColor: '#0f0f1a', color: '#a098b0', border: 'none' },
+    '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#141422' },
+    // 选区底比原先压暗：bool 用的 #ff2d78 亮度偏低，在 #3a2b4a 上只有 3.63:1。
+    // #251c2f 下 bool 达 4.59:1，且与编辑器底仍有 1.21 反差，选中状态看得出来。
+    '.cm-selectionBackground, ::selection': { backgroundColor: '#251c2f !important' },
+    '.cm-matchingBracket': { backgroundColor: '#1a4d47', outline: '1px solid #00ffcc' },
+    '.cm-tooltip': { backgroundColor: '#1e1e30', borderColor: '#493b60' },
   },
   { dark: true },
 );
 
+// 亮色同样与树视图对齐：键名取亮色 --accent，标点取亮色 --text-muted。
 const lightHighlight = HighlightStyle.define([
-  { tag: tags.propertyName, color: '#075fb8' },
-  { tag: tags.string, color: '#087b52' },
-  { tag: tags.number, color: '#a14c00' },
-  { tag: tags.bool, color: '#7b3fbb' },
-  { tag: tags.null, color: '#b4232e' },
-  { tag: [tags.brace, tags.squareBracket], color: '#555f6d' },
+  { tag: tags.propertyName, color: '#b80048', fontWeight: '600' },
+  { tag: tags.string, color: '#00736a' },
+  { tag: tags.number, color: '#a94f00', fontWeight: '500' },
+  { tag: tags.bool, color: '#7629c0', fontWeight: '700' },
+  { tag: tags.null, color: '#c8102e', fontStyle: 'italic', fontWeight: '500' },
+  { tag: [tags.brace, tags.squareBracket, tags.separator], color: '#5c3f43' },
 ]);
 
+// 暗色配色与树视图逐项对齐（用户要求统一到树视图那套）：
+// 键名取树视图 .tree-path 的 --accent 粉，布尔接手键名腾出的青 ——
+// 树视图里键名与布尔原本共用同一个粉色，靠左右分栏才没暴露；
+// 编辑器里 "homework": true 的键与值紧邻，同色就分不出来，故让布尔换成青色。
+// null 与标点同色，靠斜体区分（树视图与参考项目均是此设计）。
 const darkHighlight = HighlightStyle.define([
-  { tag: tags.propertyName, color: '#79b7ff' },
-  { tag: tags.string, color: '#79d3a7' },
-  { tag: tags.number, color: '#f2ad6d' },
-  { tag: tags.bool, color: '#d4a0ff' },
-  { tag: tags.null, color: '#ff8b96' },
-  { tag: [tags.brace, tags.squareBracket], color: '#aeb5c0' },
+  { tag: tags.propertyName, color: '#ff2d78', fontWeight: '600' },
+  { tag: tags.string, color: '#ffe04a' },
+  { tag: tags.number, color: '#ff80aa', fontWeight: '500' },
+  { tag: tags.bool, color: '#00ffcc', fontWeight: '700' },
+  { tag: tags.null, color: '#a098b0', fontStyle: 'italic', fontWeight: '500' },
+  { tag: [tags.brace, tags.squareBracket, tags.separator], color: '#a098b0' },
 ]);
 
 function editorTheme(theme: JsonEditorProps['theme']) {
@@ -152,6 +160,7 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
         highlightActiveLine(),
         lintGutter(),
         json(),
+        search({ top: true }),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
         themeCompartment.of(editorTheme(theme)),
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
@@ -207,6 +216,13 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
     applyEdit(content: string) {
       const view = viewRef.current;
       if (!view || readOnly) return;
+      // 内容与当前完全一致时不派发：CodeMirror 的全量替换不做内容比对，
+      // 照样会报 docChanged 并触发 onChange，进而把上游刚写入的校验结果清掉。
+      // 同时也避免无谓地重置光标与滚动位置。
+      if (view.state.doc.toString() === content) {
+        view.focus();
+        return;
+      }
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: content },
         selection: { anchor: 0 },
@@ -230,15 +246,7 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
     openSearch() {
       const view = viewRef.current;
       if (!view) return;
-      view.focus();
-      const shortcut = navigator.platform.toLowerCase().includes('mac') ? 'Meta-f' : 'Control-f';
-      view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'f',
-        code: 'KeyF',
-        metaKey: shortcut.startsWith('Meta'),
-        ctrlKey: shortcut.startsWith('Control'),
-        bubbles: true,
-      }));
+      openSearchPanel(view);
     },
   }), [readOnly]);
 

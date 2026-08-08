@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   createWorkspaceStore,
   isDocumentDirty,
+  MAX_HISTORY_RECORDS,
+  MAX_HISTORY_SNAPSHOT_BYTES,
   MAX_WORKSPACE_STORAGE_BYTES,
   WORKSPACE_STORAGE_KEY,
 } from './workspace';
@@ -292,5 +294,50 @@ describe('workspace store', () => {
       documentsOmitted: true,
       metadataPersisted: false,
     });
+  });
+
+  it('history 最多保留二十条并按最新记录在前', () => {
+    const store = createStore();
+    for (let index = 0; index < MAX_HISTORY_RECORDS + 3; index++) {
+      store.getState().addHistoryRecord({
+        documentId: 'doc',
+        documentTitle: 'data.json',
+        operation: 'format',
+        operationLabel: '格式化',
+        content: '{}',
+        bytes: 2,
+      });
+    }
+    expect(store.getState().history).toHaveLength(MAX_HISTORY_RECORDS);
+    expect(store.getState().history[0].createdAt).toBeGreaterThan(store.getState().history.at(-1)!.createdAt);
+  });
+
+  it('超出 history 快照阈值时保留元数据但不保存内容', () => {
+    const store = createStore();
+    const content = 'x'.repeat(MAX_HISTORY_SNAPSHOT_BYTES + 1);
+    store.getState().addHistoryRecord({
+      documentId: 'doc',
+      documentTitle: 'large.json',
+      operation: 'repair',
+      operationLabel: '修复',
+      content,
+      bytes: content.length,
+    });
+    expect(store.getState().history[0]).toMatchObject({ content: null, bytes: content.length });
+  });
+
+  it('history 不写入 localStorage 持久化白名单', () => {
+    const store = createStore();
+    store.getState().addHistoryRecord({
+      documentId: 'doc',
+      documentTitle: 'data.json',
+      operation: 'format',
+      operationLabel: '格式化',
+      content: '{}',
+      bytes: 2,
+    });
+    store.getState().flushPersistence();
+    const persisted = JSON.parse(storage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}') as Record<string, unknown>;
+    expect(persisted).not.toHaveProperty('history');
   });
 });
