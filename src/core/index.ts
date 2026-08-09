@@ -1,4 +1,6 @@
 export { diagnosticFromError, JsonParseError, parseJson } from './json-parser';
+export { runQuery } from './json-query';
+export { diffJsonNodes } from './json-diff';
 export {
   byteLength,
   calculateStats,

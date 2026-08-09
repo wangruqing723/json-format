@@ -1,12 +1,12 @@
-import { useMemo, useState } from 'react';
-import { parseJson, type JsonNode } from '../core/json-parser';
+import { useState } from 'react';
+import type { JsonNode } from '../core/json-parser';
 import { propertyPath } from '../core/json-path';
 import { Icon } from './Icon';
 
-interface StructurePanelProps {
-  source: string;
+export interface StructurePanelProps {
+  root: JsonNode | null;
+  parseError: string | null;
   onSelectPath?: (path: string) => void;
-  oversized?: boolean;
 }
 
 function isContainer(node: JsonNode) {
@@ -54,15 +54,7 @@ function StructureNode({ node, label, path, depth, onSelectPath }: { node: JsonN
   );
 }
 
-export function StructurePanel({ source, onSelectPath, oversized = false }: StructurePanelProps) {
-  const parsed = useMemo(() => {
-    if (oversized) return { node: null, error: '文档超过 5 MB，暂不解析结构。' };
-    try {
-      return { node: parseJson(source), error: null };
-    } catch {
-      return { node: null, error: '暂无可解析的 JSON 结构' };
-    }
-  }, [oversized, source]);
+export function StructurePanel({ root, parseError, onSelectPath }: StructurePanelProps) {
   const [selectedPath, setSelectedPath] = useState('$');
 
   const selectPath = (path: string) => {
@@ -76,12 +68,12 @@ export function StructurePanel({ source, onSelectPath, oversized = false }: Stru
         <div><span className="structure-eyebrow">JSON MAP</span><h2>结构总览</h2></div>
         <Icon name="account_tree" size={19} />
       </header>
-      {parsed.node ? (
+      {root ? (
         <div className="structure-tree" role="tree">
-          <StructureNode node={parsed.node} label="$" path="$" depth={0} onSelectPath={selectPath} />
+          <StructureNode node={root} label="$" path="$" depth={0} onSelectPath={selectPath} />
         </div>
       ) : (
-        <div className="structure-empty" role="status"><Icon name="data_object" size={26} /><span>{parsed.error}</span></div>
+        <div className="structure-empty" role="status"><Icon name="data_object" size={26} /><span>{parseError ?? '暂无可解析的 JSON 结构'}</span></div>
       )}
       <div className="structure-detected">
         <span>KEY DETECTED</span>

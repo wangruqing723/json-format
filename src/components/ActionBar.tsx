@@ -12,9 +12,11 @@ export interface MoreAction {
   onSelect: () => void;
 }
 
-interface ActionBarProps {
+export interface ActionBarProps {
   onOpen: () => void;
   onSave: () => void;
+  onSaveAs: () => void;
+  onCopyAll: () => void;
   onFormat: () => void;
   onMinify: () => void;
   onSort: () => void;
@@ -26,11 +28,15 @@ interface ActionBarProps {
   status: { tone: StatusTone; text: string; line?: number; column?: number };
   onRevealDiagnostic?: () => void;
   moreActions: MoreAction[];
+  activePanel: 'search' | 'schema' | null;
+  onTogglePanel: (panel: 'search' | 'schema') => void;
 }
 
 export function ActionBar({
   onOpen,
   onSave,
+  onSaveAs,
+  onCopyAll,
   onFormat,
   onMinify,
   onSort,
@@ -42,6 +48,8 @@ export function ActionBar({
   status,
   onRevealDiagnostic,
   moreActions,
+  activePanel,
+  onTogglePanel,
 }: ActionBarProps) {
   const [openMenu, setOpenMenu] = useState<'recent' | 'more' | null>(null);
   const recentMenuRef = useRef<HTMLDivElement>(null);
@@ -97,6 +105,12 @@ export function ActionBar({
         <button className="tool-button tool-button--compact" type="button" onClick={onSave} data-tooltip="保存 (Ctrl/⌘ S)" aria-label="保存 (Ctrl/⌘ S)">
           <Icon name="save" size={16} /><span>保存</span>
         </button>
+        <button className="tool-button tool-button--compact" type="button" onClick={onSaveAs} data-tooltip="另存为 (Ctrl/⌘ Shift S)" aria-label="另存为 (Ctrl/⌘ Shift S)">
+          <Icon name="save" size={16} /><span>另存为</span>
+        </button>
+        <button className="tool-button tool-button--compact" type="button" onClick={onCopyAll} data-tooltip="复制活动标签全文" aria-label="复制活动标签全文">
+          <Icon name="content_copy" size={16} /><span>复制全文</span>
+        </button>
       </div>
       <span className="toolbar-divider" />
       <div className="toolbar-group transform-actions">
@@ -134,6 +148,28 @@ export function ActionBar({
             ))}
           </div>
         )}
+      </div>
+      <div className="toolbar-group panel-actions">
+        <button
+          className={`tool-button toolbar-secondary${activePanel === 'search' ? ' is-active' : ''}`}
+          type="button"
+          onClick={() => onTogglePanel('search')}
+          aria-pressed={activePanel === 'search'}
+          data-tooltip="Search"
+          aria-label="Search"
+        >
+          <Icon name="search" size={16} /><span>Search</span>
+        </button>
+        <button
+          className={`tool-button toolbar-secondary${activePanel === 'schema' ? ' is-active' : ''}`}
+          type="button"
+          onClick={() => onTogglePanel('schema')}
+          aria-pressed={activePanel === 'schema'}
+          data-tooltip="Schema"
+          aria-label="Schema"
+        >
+          <Icon name="account_tree" size={16} /><span>Schema</span>
+        </button>
       </div>
     </div>
   );

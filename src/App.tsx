@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { ActionBar, type MoreAction } from './components/ActionBar';
 import { AboutDialog } from './components/AboutDialog';
 import { AppHeader, type WorkspaceView } from './components/AppHeader';
@@ -9,11 +9,24 @@ import { Icon } from './components/Icon';
 import { InfoRow } from './components/InfoRow';
 import { JsonEditor, type JsonEditorHandle } from './components/JsonEditor';
 import { HistoryView, type HistoryRecord } from './components/HistoryView';
-import { Sidebar, type SidebarTab } from './components/Sidebar';
+import { SearchPanel } from './components/SearchPanel';
+import { Sidebar } from './components/Sidebar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { StructurePanel } from './components/StructurePanel';
-import { TreeView } from './components/TreeView';
+import { StructureResizer } from './components/StructureResizer';
+import { EXPAND_ALL_CONFIRM_ROWS, TreeView, type TreeViewHandle } from './components/TreeView';
 import { isCurrentDocumentSnapshot } from './core/document-snapshot';
+import { parseJson, type JsonNode } from './core/json-parser';
+import { runQuery, type QueryHit, type QueryResult } from './core/json-query';
+import {
+  collapseAll,
+  containsDuplicateKeys,
+  countVisibleRows,
+  createExpandState,
+  expandAll,
+  revealPath,
+  type ExpandState,
+} from './core/tree-flatten';
 import { JsonWorkerClient, WorkerCancelledError } from './services/worker-client';
 import {
   listenForJsonDrops,
@@ -21,6 +34,7 @@ import {
   readJsonPath,
   revealFileInFolder,
   saveJsonFile,
+  saveJsonFileAs,
   writeClipboardText,
   isTauriRuntime,
   type OpenedJsonFile,
@@ -30,7 +44,7 @@ import type { JsonDiagnostic, ProcessingMeta, WorkerOperation } from './types';
 import { formatBytes } from './utils/format';
 
 const AUTO_VALIDATE_LIMIT = 10 * 1024 * 1024;
-const STRUCTURED_VIEW_LIMIT = 5 * 1024 * 1024;
+const DIFF_VIEW_LIMIT = 5 * 1024 * 1024;
 
 type OutputMode = 'replace' | 'new-tab';
 
@@ -77,6 +91,8 @@ const operationLabels: Record<WorkerOperation, string> = {
   escape: '转义',
   unescape: '反转义',
   stats: '统计',
+  query: '查询',
+  diff: '比较',
 };
 
 function useResolvedTheme(preference: 'system' | 'light' | 'dark') {
@@ -123,7 +139,16 @@ export function App() {
   } = useWorkspaceStore();
   const activeDocument = documents.find((document) => document.id === activeDocumentId) ?? documents[0];
   const resolvedTheme = useResolvedTheme(settings.theme);
+  // 拖拽期间走本地 state：每帧都写 store 会连带触发 localStorage 持久化，
+  // 松手时才 commit 一次。settings 侧的值变化（如设置面板重置）由下面的 effect 同步回来。
+  const [structureWidth, setStructureWidth] = useState(settings.structureWidth);
+  useEffect(() => setStructureWidth(settings.structureWidth), [settings.structureWidth]);
+  const commitStructureWidth = useCallback(
+    (width: number) => updateSettings({ structureWidth: width }),
+    [updateSettings],
+  );
   const editorRef = useRef<JsonEditorHandle>(null);
+  const treeViewRef = useRef<TreeViewHandle>(null);
   const actionWorkerRef = useRef<JsonWorkerClient | null>(null);
   const validationWorkerRef = useRef<JsonWorkerClient | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -140,13 +165,58 @@ export function App() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('explorer');
+  const [activePanel, setActivePanel] = useState<'search' | 'schema' | null>(null);
+  const [expandState, setExpandState] = useState<ExpandState>(createExpandState);
+  const [searchInput, setSearchInput] = useState('');
+  const [pendingTreeScrollPath, setPendingTreeScrollPath] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
   const { confirm, dialog: confirmDialog } = useConfirm();
 
   if (!actionWorkerRef.current) actionWorkerRef.current = new JsonWorkerClient();
   if (!validationWorkerRef.current) validationWorkerRef.current = new JsonWorkerClient();
+
+  const parseResult = useMemo<{ root: JsonNode | null; parseError: string | null; hasDuplicates: boolean }>(() => {
+    if (!activeDocument?.content.trim()) return { root: null, parseError: 'JSON 内容为空', hasDuplicates: false };
+    try {
+      const root = parseJson(activeDocument.content);
+      return { root, parseError: null, hasDuplicates: containsDuplicateKeys(root) };
+    } catch (error) {
+      return {
+        root: null,
+        parseError: error instanceof Error ? error.message : '无法解析 JSON',
+        hasDuplicates: false,
+      };
+    }
+  }, [activeDocument?.content]);
+
+  const queryResult = useMemo<QueryResult | null>(() => {
+    if (!parseResult.root || !searchInput.trim()) return null;
+    return runQuery(parseResult.root, searchInput);
+  }, [parseResult.root, searchInput]);
+
+  const highlightPaths = useMemo<ReadonlySet<string>>(
+    () => new Set(queryResult?.hits.map((hit) => hit.path) ?? []),
+    [queryResult],
+  );
+
+  useEffect(() => {
+    setExpandState(createExpandState());
+  }, [activeDocument?.id]);
+
+  useEffect(() => {
+    if (!queryResult || activeDocument?.view !== 'tree') return;
+    setExpandState((current) => queryResult.hits.reduce((state, hit) => revealPath(state, hit.path), current));
+  }, [activeDocument?.view, queryResult]);
+
+  useEffect(() => {
+    if (!pendingTreeScrollPath || activeDocument?.view !== 'tree') return;
+    const frame = window.requestAnimationFrame(() => {
+      treeViewRef.current?.scrollToPath(pendingTreeScrollPath);
+      setPendingTreeScrollPath(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeDocument?.view, expandState, pendingTreeScrollPath]);
 
   const showToast = useCallback((message: string, tone: ToastState['tone'] = 'neutral') => {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
@@ -167,6 +237,44 @@ export function App() {
   const handleOpenDocs = useCallback(() => {
     setAboutOpen(true);
   }, []);
+
+  const focusSearch = useCallback(() => {
+    setActivePanel('search');
+    window.requestAnimationFrame(() => document.getElementById('workspace-search')?.focus());
+  }, []);
+
+  const togglePanel = useCallback((panel: 'search' | 'schema') => {
+    setActivePanel((current) => current === panel ? null : panel);
+  }, []);
+
+  const expandAllRows = useCallback(async () => {
+    if (!parseResult.root) return;
+    const next = expandAll(expandState);
+    const count = countVisibleRows(parseResult.root, next);
+    if (count > EXPAND_ALL_CONFIRM_ROWS) {
+      const confirmed = await confirm({
+        title: '展开全部节点',
+        message: `全部展开后预计有 ${count.toLocaleString()} 行，可能占用较多内存。仍要继续吗？`,
+        confirmLabel: '展开全部',
+      });
+      if (!confirmed) return;
+    }
+    setExpandState(next);
+  }, [confirm, expandState, parseResult.root]);
+
+  const collapseAllRows = useCallback(() => {
+    setExpandState((current) => collapseAll(current));
+  }, []);
+
+  const selectQueryHit = useCallback((hit: QueryHit) => {
+    if (!activeDocument) return;
+    if (activeDocument.view === 'tree') {
+      setExpandState((current) => revealPath(current, hit.path));
+      setPendingTreeScrollPath(hit.path);
+      return;
+    }
+    setPendingReveal({ documentId: activeDocument.id, offset: hit.offset });
+  }, [activeDocument]);
 
   useEffect(() => {
     if (persistenceIssue) showToast(persistenceIssue.message, 'error');
@@ -375,6 +483,39 @@ export function App() {
     }
   }, [confirm, diagnostics, markSaved, showToast]);
 
+  const handleSaveAs = useCallback(async () => {
+    const current = useWorkspaceStore.getState().documents.find(
+      (document) => document.id === useWorkspaceStore.getState().activeDocumentId,
+    );
+    if (!current) return;
+    const savedContent = current.content;
+    if (!savedContent.trim()) {
+      showToast('文档为空，无内容可保存', 'neutral');
+      return;
+    }
+    const diagnostic = diagnostics[current.id];
+    if (byteLength(savedContent) <= AUTO_VALIDATE_LIMIT && diagnostic?.severity === 'error') {
+      const confirmed = await confirm({
+        title: '保存存在语法错误的 JSON',
+        message: '当前 JSON 存在语法错误,仍要保存吗?',
+        confirmLabel: '仍要保存',
+        tone: 'danger',
+      });
+      if (!confirmed) return;
+    }
+    try {
+      const saved = await saveJsonFileAs(savedContent, current.title);
+      if (!saved) return;
+      markSaved(current.id, saved.filePath, saved.title, savedContent);
+      showToast(
+        saved.fellBackToDownload ? '浏览器不支持选择保存位置，已下载文件' : '文件已另存为',
+        saved.fellBackToDownload ? 'neutral' : 'success',
+      );
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '另存文件失败', 'error');
+    }
+  }, [confirm, diagnostics, markSaved, showToast]);
+
   const requestClose = useCallback(async (id: string) => {
     const document = useWorkspaceStore.getState().documents.find((item) => item.id === id);
     if (!document) return;
@@ -509,8 +650,8 @@ export function App() {
 
   const enterDiff = useCallback(() => {
     const state = useWorkspaceStore.getState();
-    if (byteLength(state.documents.find((document) => document.id === state.activeDocumentId)?.content ?? '') > STRUCTURED_VIEW_LIMIT) {
-      showToast(`文档超过 ${formatBytes(STRUCTURED_VIEW_LIMIT)}，已停用 Diff。可先用「压缩」缩减体积或拆分后再比较`, 'neutral');
+    if (byteLength(state.documents.find((document) => document.id === state.activeDocumentId)?.content ?? '') > DIFF_VIEW_LIMIT) {
+      showToast(`文档超过 ${formatBytes(DIFF_VIEW_LIMIT)}，已停用 Diff。可先用「压缩」缩减体积或拆分后再比较`, 'neutral');
       return;
     }
     if (state.documents.length < 2) {
@@ -527,10 +668,6 @@ export function App() {
     const current = useWorkspaceStore.getState();
     const document = current.documents.find((item) => item.id === current.activeDocumentId);
     if (!document) return;
-    if (view === 'tree' && byteLength(document.content) > STRUCTURED_VIEW_LIMIT) {
-      showToast(`文档超过 ${formatBytes(STRUCTURED_VIEW_LIMIT)}，已停用树视图，可继续在文本视图中编辑`, 'neutral');
-      return;
-    }
     current.setDiff(null);
     current.setView(document.id, view);
   }, [showToast]);
@@ -619,12 +756,25 @@ export function App() {
       if (mod && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         openCommandPanel();
+      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'e' && activeDocument?.view === 'tree' && !diff && !historyOpen) {
+        event.preventDefault();
+        void expandAllRows();
+      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'w' && activeDocument?.view === 'tree' && !diff && !historyOpen) {
+        event.preventDefault();
+        collapseAllRows();
+      } else if (mod && event.key.toLowerCase() === 'f' && !diff && !historyOpen) {
+        event.preventDefault();
+        if (activeDocument?.view === 'tree') focusSearch();
+        else editorRef.current?.openSearch();
       } else if (mod && event.key.toLowerCase() === 'n') {
         event.preventDefault();
         newDocument();
       } else if (mod && event.key.toLowerCase() === 'o') {
         event.preventDefault();
         void handleOpen();
+      } else if (mod && event.shiftKey && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void handleSaveAs();
       } else if (mod && event.key.toLowerCase() === 's') {
         event.preventDefault();
         void handleSave();
@@ -638,17 +788,13 @@ export function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [handleFormat, handleOpen, handleSave, newDocument, openCommandPanel, requestClose]);
+  }, [activeDocument?.view, collapseAllRows, diff, expandAllRows, focusSearch, handleFormat, handleOpen, handleSave, handleSaveAs, historyOpen, newDocument, openCommandPanel, requestClose]);
 
   if (!activeDocument) return null;
   const activeDiagnostic = diagnostics[activeDocument.id];
   const activeMeta = metadata[activeDocument.id];
   const activeBytes = byteLength(activeDocument.content);
-  const activeDirty = isDocumentDirty(activeDocument);
-  const diffLeft = diff ? documents.find((document) => document.id === diff.leftId) : null;
-  const diffRight = diff ? documents.find((document) => document.id === diff.rightId) : null;
-  const displayTitle = diffLeft && diffRight ? `${diffLeft.title} ↔ ${diffRight.title}` : activeDocument.title;
-  const canSearch = !diff && !historyOpen && activeDocument.view === 'text';
+  const canSearch = !diff && !historyOpen;
   const transformsDisabled = Boolean(processing) || Boolean(diff) || historyOpen;
   const activeView: WorkspaceView = historyOpen ? 'history' : diff ? 'diff' : activeDocument.view;
   const activeStatus = {
@@ -677,7 +823,6 @@ export function App() {
   const moreActions: MoreAction[] = [
     { id: 'escape', label: '转义字符串', icon: 'bolt', disabled: transformsDisabled, onSelect: () => void runOperation('escape') },
     { id: 'unescape', label: '反转义字符串', icon: 'bolt', disabled: transformsDisabled, onSelect: () => void runOperation('unescape') },
-    { id: 'copy', label: '复制活动标签全文', icon: 'content_paste', onSelect: () => void copyCurrent() },
     ...(activeDocument.filePath ? [{ id: 'reveal', label: '在文件管理器中显示', icon: 'folder_open', onSelect: () => void revealCurrentFile() }] : []),
     { id: 'format-new-tab', label: '格式化到新标签', icon: 'note_add', disabled: transformsDisabled, onSelect: () => void runOperation('format', 'new-tab') },
     { id: 'minify-new-tab', label: '压缩到新标签', icon: 'note_add', disabled: transformsDisabled, onSelect: () => void runOperation('minify', 'new-tab') },
@@ -686,12 +831,15 @@ export function App() {
   return (
     <div className="app-shell">
       <AppHeader
-        activeView={activeView}
-        onChangeView={changeView}
-        title={diff ? displayTitle : activeDocument.filePath ?? activeDocument.title}
-        dirty={!diff && activeDirty}
+        sidebarCollapsed={settings.sidebarCollapsed}
+        onToggleSidebar={() => updateSettings({ sidebarCollapsed: !settings.sidebarCollapsed })}
+        documents={documents}
+        activeDocumentId={activeDocument.id}
+        onSelectDocument={selectDocument}
+        onCloseDocument={requestClose}
+        onNewDocument={() => newDocument()}
         canSearch={canSearch}
-        onSearch={() => canSearch && editorRef.current?.openSearch()}
+        onSearch={() => canSearch && (activeDocument.view === 'tree' ? focusSearch() : editorRef.current?.openSearch())}
         onOpenCommandPalette={openCommandPanel}
         onOpenSettings={openSettingsPanel}
         theme={resolvedTheme}
@@ -700,53 +848,31 @@ export function App() {
 
       <div className="app-main-row">
         <Sidebar
-          activeTab={sidebarTab}
-          onChangeTab={setSidebarTab}
-          documents={documents}
-          activeDocumentId={activeDocument.id}
-          recentFiles={recentFiles}
-          onSelectDocument={selectDocument}
-          onOpenRecent={(path) => void handleOpenRecent(path)}
+          activeView={activeView}
+          onChangeView={changeView}
+          collapsed={settings.sidebarCollapsed}
           onNewDocument={() => newDocument()}
-          documentCount={documents.length}
-          processingLabel={processing ? operationLabels[processing.operation] : null}
-          persistenceIssue={persistenceIssue?.message ?? null}
           onOpenDocs={handleOpenDocs}
         />
         <section className="center-workspace">
-          <nav className="tabs-row" aria-label="文档标签">
-        <div className="tabs-scroll">
-          {documents.map((document) => (
-            <div key={document.id} className={document.id === activeDocument.id ? 'document-tab is-active' : 'document-tab'}>
-              <button type="button" className="tab-select" onClick={() => selectDocument(document.id)} title={document.filePath ?? document.title}>
-                <span className={isDocumentDirty(document) ? 'dirty-dot is-dirty' : 'dirty-dot'} />
-                <span>{document.title}</span>
-              </button>
-              <button className="tab-close" type="button" onClick={() => requestClose(document.id)} aria-label={`关闭 ${document.title}`}>
-                <Icon name="close" size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
-        <button className="new-tab-button icon-button" type="button" onClick={() => newDocument()} data-tooltip="新建 (Ctrl/⌘ N)" aria-label="新建文档">
-          <Icon name="note_add" size={15} />
-        </button>
-          </nav>
-
           <ActionBar
-        onOpen={() => void handleOpen()}
-        onSave={() => void handleSave()}
-        onFormat={handleFormat}
-        onMinify={() => void runOperation('minify')}
-        onSort={() => void runOperation('sort')}
-        onRepair={() => void runOperation('repair')}
-        transformsDisabled={transformsDisabled}
-        disabledReason={transformBlockedReason(diff, historyOpen, Boolean(processing))}
-        recentFiles={recentFiles}
-        onOpenRecent={(path) => void handleOpenRecent(path)}
-        status={activeStatus}
-        onRevealDiagnostic={activeDiagnostic ? () => revealDiagnostic(activeDiagnostic) : undefined}
-        moreActions={moreActions}
+            onOpen={() => void handleOpen()}
+            onSave={() => void handleSave()}
+            onSaveAs={() => void handleSaveAs()}
+            onCopyAll={() => void copyCurrent()}
+            onFormat={handleFormat}
+            onMinify={() => void runOperation('minify')}
+            onSort={() => void runOperation('sort')}
+            onRepair={() => void runOperation('repair')}
+            transformsDisabled={transformsDisabled}
+            disabledReason={transformBlockedReason(diff, historyOpen, Boolean(processing))}
+            recentFiles={recentFiles}
+            onOpenRecent={(path) => void handleOpenRecent(path)}
+            status={activeStatus}
+            onRevealDiagnostic={activeDiagnostic ? () => revealDiagnostic(activeDiagnostic) : undefined}
+            moreActions={moreActions}
+            activePanel={activePanel}
+            onTogglePanel={togglePanel}
           />
 
           <main className="workspace">
@@ -765,7 +891,17 @@ export function App() {
             onEdit={(id, content) => updateContent(id, content)}
           />
         ) : activeDocument.view === 'tree' ? (
-          <TreeView source={activeDocument.content} onCopy={handleTreeCopy} />
+          <TreeView
+            ref={treeViewRef}
+            root={parseResult.root}
+            parseError={parseResult.parseError}
+            hasDuplicates={parseResult.hasDuplicates}
+            expandState={expandState}
+            onExpandChange={setExpandState}
+            highlightPaths={highlightPaths}
+            onCopy={handleTreeCopy}
+            onRevealInText={(offset) => setPendingReveal({ documentId: activeDocument.id, offset })}
+          />
         ) : (
           <JsonEditor
             key={activeDocument.id}
@@ -796,9 +932,30 @@ export function App() {
         persistenceIssue={persistenceIssue?.message ?? null}
           />}
         </section>
-        {sidebarTab === 'schema' && activeView === 'text' && (
-          <StructurePanel source={activeDocument.content} oversized={activeBytes > STRUCTURED_VIEW_LIMIT} />
-        )}
+        <div className="workspace-panel-layer">
+          {activePanel === 'search' && (
+            <SearchPanel
+              input={searchInput}
+              onChangeInput={setSearchInput}
+              result={queryResult}
+              onSelectHit={selectQueryHit}
+              onClose={() => setActivePanel(null)}
+            />
+          )}
+          {activePanel === 'schema' && (
+            <div
+              className="workspace-float-panel schema-panel"
+              style={{ '--structure-width': `${structureWidth}px` } as CSSProperties}
+            >
+              <StructureResizer
+                width={structureWidth}
+                onWidthChange={setStructureWidth}
+                onCommit={commitStructureWidth}
+              />
+              <StructurePanel root={parseResult.root} parseError={parseResult.parseError} />
+            </div>
+          )}
+        </div>
       </div>
 
       {processing && (

@@ -7,6 +7,8 @@ import type {
   WorkerResponse,
 } from '../types';
 import { diagnosticFromError, parseJson } from './json-parser';
+import { diffJsonNodes } from './json-diff';
+import { runQuery, type QueryResult } from './json-query';
 import {
   byteLength,
   calculateStats,
@@ -30,7 +32,13 @@ export function processWorkerRequest(request: WorkerRequest): WorkerResponse {
       ...(output.stats ? { stats: output.stats } : {}),
       ...(output.warnings.length > 0 ? { warnings: output.warnings } : {}),
     };
-    return { requestId: request.requestId, ok: true, result: output.result, meta };
+    return {
+      requestId: request.requestId,
+      ok: true,
+      result: output.result,
+      meta,
+      ...(output.data === undefined ? {} : { data: output.data }),
+    };
   } catch (error) {
     return {
       requestId: request.requestId,
@@ -46,6 +54,7 @@ interface OperationResult {
   empty?: boolean;
   stats?: ReturnType<typeof calculateStats>;
   warnings: ReturnType<typeof collectDuplicateKeyWarnings>;
+  data?: unknown;
 }
 
 function processOperation(
@@ -102,6 +111,29 @@ function processOperation(
     }
     case 'stats':
       return { result: JSON.stringify(stats), valid: true, stats, warnings };
+    case 'query': {
+      const query = typeof options?.input === 'string' ? options.input : '';
+      const data: QueryResult = runQuery(root, query);
+      return {
+        result: data.error ? `查询失败：${data.error}` : `命中 ${data.hits.length} 处${data.truncated ? '（已截断）' : ''}`,
+        valid: true,
+        stats,
+        warnings,
+        data,
+      };
+    }
+    case 'diff': {
+      const other = typeof options?.other === 'string' ? options.other : '';
+      const right = parseJson(other);
+      const data = diffJsonNodes(root, right);
+      return {
+        result: `+${data.summary.added} ~${data.summary.changed} -${data.summary.removed}`,
+        valid: true,
+        stats,
+        warnings,
+        data,
+      };
+    }
     default:
       return assertNever(operation);
   }

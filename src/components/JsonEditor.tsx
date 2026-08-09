@@ -68,8 +68,9 @@ const darkTheme = EditorView.theme(
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#00ffcc' },
     '.cm-gutters': { backgroundColor: '#0f0f1a', color: '#a098b0', border: 'none' },
     '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#141422' },
-    // 选区底比原先压暗：bool 用的 #ff2d78 亮度偏低，在 #3a2b4a 上只有 3.63:1。
-    // #251c2f 下 bool 达 4.59:1，且与编辑器底仍有 1.21 反差，选中状态看得出来。
+    // 选区底比原先压暗：键名用的 #ff2d78 亮度偏低，在 #3a2b4a 上只有 3.63:1。
+    // #251c2f 下键名达 4.59:1，且与编辑器底仍有 1.21 反差，选中状态看得出来。
+    // 键名是出现频率最高的 token，故以它作为选区底色的对比度基准。
     '.cm-selectionBackground, ::selection': { backgroundColor: '#251c2f !important' },
     '.cm-matchingBracket': { backgroundColor: '#1a4d47', outline: '1px solid #00ffcc' },
     '.cm-tooltip': { backgroundColor: '#1e1e30', borderColor: '#493b60' },

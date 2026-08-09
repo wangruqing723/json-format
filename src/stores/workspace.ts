@@ -1,6 +1,7 @@
 import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type { HistoryRecord } from '../components/HistoryView';
+import { clampStructureWidth, STRUCTURE_PANEL_DEFAULT_WIDTH } from '../core/structure-width';
 import type {
   AppSettings,
   DocumentId,
@@ -41,6 +42,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   indent: 2,
   sortKeys: false,
   restoreSession: true,
+  sidebarCollapsed: false,
+  diffMode: 'structural',
+  structureWidth: STRUCTURE_PANEL_DEFAULT_WIDTH,
 };
 
 export interface OpenDocumentInput {
@@ -409,6 +413,17 @@ function sanitizeSettings(settings: Partial<AppSettings>): Partial<AppSettings> 
   if (typeof settings.sortKeys === 'boolean') result.sortKeys = settings.sortKeys;
   if (typeof settings.restoreSession === 'boolean') {
     result.restoreSession = settings.restoreSession;
+  }
+  if (typeof settings.sidebarCollapsed === 'boolean') {
+    result.sidebarCollapsed = settings.sidebarCollapsed;
+  }
+  if (settings.diffMode === 'structural' || settings.diffMode === 'line') {
+    result.diffMode = settings.diffMode;
+  }
+  // 宽度必须钳制而非直接采信：手改 localStorage 或旧版本遗留的越界值
+  // 会让面板宽到挤掉编辑区；NaN 更会把 CSS 变量变成 auto，面板直接塌掉。
+  if (typeof settings.structureWidth === 'number') {
+    result.structureWidth = clampStructureWidth(settings.structureWidth);
   }
   return result;
 }

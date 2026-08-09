@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createRef } from 'react';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -9,7 +10,9 @@ import { buildDiffRows, DiffView } from './DiffView';
 import { SettingsDialog } from './SettingsDialog';
 import { StructurePanel } from './StructurePanel';
 import { ICON_CODEPOINTS } from './Icon';
-import { TreeView } from './TreeView';
+import { TreeView, type TreeViewHandle } from './TreeView';
+import { parseJson } from '../core/json-parser';
+import { createExpandState } from '../core/tree-flatten';
 import type { JsonDocument } from '../types';
 
 afterEach(cleanup);
@@ -38,7 +41,7 @@ function documentFixture(id: string, title: string, content: string): JsonDocume
 describe('TreeView', () => {
   it('展开节点并复制 JSONPath', () => {
     const onCopy = vi.fn();
-    render(<TreeView source={'{"user":{"name":"Ada"}}'} onCopy={onCopy} />);
+    render(<TreeView root={parseJson('{"user":{"name":"Ada"}}')} parseError={null} hasDuplicates={false} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={onCopy} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'user' }));
     expect(onCopy).toHaveBeenCalledWith('$.user', '路径');
@@ -46,13 +49,13 @@ describe('TreeView', () => {
   });
 
   it('为非法 JSON 显示可访问的空状态', () => {
-    render(<TreeView source="{" onCopy={vi.fn()} />);
+    render(<TreeView root={null} parseError="JSON 无效" hasDuplicates={false} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={vi.fn()} />);
     expect(screen.getByRole('status')).toHaveTextContent('树视图不可用');
   });
 
   it('保留大整数和重复键，不提供有歧义的路径复制', () => {
     const onCopy = vi.fn();
-    render(<TreeView source={'{"id":90071992547409931234,"key":1,"key":2}'} onCopy={onCopy} />);
+    render(<TreeView root={parseJson('{"id":90071992547409931234,"key":1,"key":2}')} parseError={null} hasDuplicates={true} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={onCopy} />);
 
     expect(screen.getByText('90071992547409931234')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('检测到重复键');
@@ -60,6 +63,27 @@ describe('TreeView', () => {
     expect(screen.getAllByRole('button', { name: 'key' })[0]).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '复制 id 的值' }));
     expect(onCopy).toHaveBeenCalledWith('90071992547409931234', '值');
+  });
+
+  it('大数组首屏只挂载虚拟窗口行', () => {
+    const item = 'x'.repeat(260);
+    const source = `[${Array.from({ length: 18_500 }, () => JSON.stringify(item)).join(',')}]`;
+    const { container } = render(
+      <TreeView root={parseJson(source)} parseError={null} hasDuplicates={false} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={vi.fn()} />,
+    );
+    expect(container.querySelectorAll('[data-tree-row]').length).toBeLessThan(100);
+  });
+
+  it('暴露虚拟列表滚动句柄定位路径', () => {
+    const ref = createRef<TreeViewHandle>();
+    const source = `[${Array.from({ length: 100 }, (_, index) => String(index)).join(',')}]`;
+    const { container } = render(
+      <TreeView ref={ref} root={parseJson(source)} parseError={null} hasDuplicates={false} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={vi.fn()} />,
+    );
+
+    ref.current?.scrollToPath('$[80]');
+
+    expect(container.querySelector<HTMLElement>('.tree-virtual-scroll')?.scrollTop).toBeGreaterThan(0);
   });
 });
 
@@ -92,7 +116,7 @@ describe('DiffView', () => {
 describe('StructurePanel', () => {
   it('长值保留完整 title 且不会挤压键区', () => {
     const value = 'x'.repeat(240);
-    const { container } = render(<StructurePanel source={JSON.stringify({ token: value })} />);
+    const { container } = render(<StructurePanel root={parseJson(JSON.stringify({ token: value }))} parseError={null} />);
     expect(screen.getByText('token')).toBeInTheDocument();
     expect([...container.querySelectorAll<HTMLElement>('.structure-summary')].find((element) => element.title.includes(value))).toBeTruthy();
   });
@@ -100,7 +124,7 @@ describe('StructurePanel', () => {
   it('深层嵌套将缩进封顶，避免结构面板横向扩张', () => {
     let source = '{"leaf":true}';
     for (let index = 7; index >= 0; index--) source = `{"level${index}":${source}}`;
-    const { container } = render(<StructurePanel source={source} />);
+    const { container } = render(<StructurePanel root={parseJson(source)} parseError={null} />);
     let collapsed = screen.queryAllByRole('button', { name: /展开/ });
     while (collapsed.length) {
       fireEvent.click(collapsed[0]);

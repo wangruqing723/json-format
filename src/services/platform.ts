@@ -9,6 +9,29 @@ export interface SavedJsonFile {
   title: string;
 }
 
+export interface SavedJsonFileAs extends SavedJsonFile {
+  /** true 表示浏览器不支持选位置，已降级为下载 */
+  fellBackToDownload: boolean;
+}
+
+interface BrowserSaveFileHandle {
+  name: string;
+  createWritable(): Promise<{
+    write(data: string): Promise<void>;
+    close(): Promise<void>;
+  }>;
+}
+
+interface SaveFilePickerOptions {
+  suggestedName?: string;
+  types?: Array<{
+    description: string;
+    accept: Record<string, string[]>;
+  }>;
+}
+
+type ShowSaveFilePicker = (options?: SaveFilePickerOptions) => Promise<BrowserSaveFileHandle>;
+
 export function isTauriRuntime() {
   return typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
 }
@@ -96,6 +119,54 @@ export async function saveJsonFile(
   anchor.click();
   URL.revokeObjectURL(url);
   return { filePath: null, title: suggestedName };
+}
+
+/** 强制弹出保存对话框，忽略文档已有路径。 */
+export async function saveJsonFileAs(
+  content: string,
+  currentTitle: string,
+): Promise<SavedJsonFileAs | null> {
+  const suggestedName = ensureJsonExtension(currentTitle.replace(/^未命名(?: \d+)?(?:\.json)?$/u, 'untitled'));
+
+  if (isTauriRuntime()) {
+    const [{ save }, { writeTextFile }] = await Promise.all([
+      import('@tauri-apps/plugin-dialog'),
+      import('@tauri-apps/plugin-fs'),
+    ]);
+    const path = await save({
+      defaultPath: suggestedName,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (!path) return null;
+    await writeTextFile(path, content);
+    return { filePath: path, title: basename(path), fellBackToDownload: false };
+  }
+
+  const picker = (window as Window & { showSaveFilePicker?: ShowSaveFilePicker }).showSaveFilePicker;
+  if (picker) {
+    try {
+      const file = await picker({
+        suggestedName,
+        types: [{ description: 'JSON 文件', accept: { 'application/json': ['.json'] } }],
+      });
+      const writable = await file.createWritable();
+      await writable.write(content);
+      await writable.close();
+      return { filePath: null, title: basename(file.name), fellBackToDownload: false };
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return null;
+      throw error;
+    }
+  }
+
+  const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = suggestedName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+  return { filePath: null, title: suggestedName, fellBackToDownload: true };
 }
 
 export async function writeClipboardText(text: string) {

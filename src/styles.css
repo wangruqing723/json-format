@@ -44,9 +44,13 @@
   font-weight: 100 800;
 }
 
+/* 图标字体放在 src/assets 而非 public：子集内容随映射表变化，
+   public 下的文件名不带哈希，浏览器会一直用缓存的旧字体，
+   新增图标显示成方框（chevron_left 就这样漏过一轮验证）。
+   走 Vite 资源管线后文件名按内容出哈希，内容一变 URL 就变。 */
 @font-face {
   font-family: 'Material Symbols Outlined';
-  src: url('/fonts/MaterialSymbolsOutlined-subset.woff2') format('woff2');
+  src: url('./assets/fonts/MaterialSymbolsOutlined-subset.woff2') format('woff2');
   font-display: swap;
   font-style: normal;
   font-weight: 100 700;
@@ -1278,20 +1282,9 @@ input[role='switch']:checked::after {
   flex: 0 0 240px;
   flex-direction: column;
   overflow: hidden;
+  padding-top: 12px;
   border-right: 1px solid var(--border);
   background: var(--panel);
-}
-
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  min-height: 48px;
-  gap: 8px;
-  padding: 0 16px;
-  color: var(--accent);
-  font-family: var(--font-headline);
-  font-size: 13px;
-  font-weight: 700;
 }
 
 .new-project-button {
@@ -1435,10 +1428,10 @@ input[role='switch']:checked::after {
   background: var(--panel);
 }
 
+/* 之前这里有 width/flex: 0 0 288px 与 flex: 1 并存，后者生效、前两行是死代码，
+   随本次改造一并清掉，避免误读成面板自身也在定宽。 */
 .structure-panel {
   display: flex;
-  width: 288px;
-  flex: 0 0 288px;
   min-width: 0;
   min-height: 0;
   flex: 1;
@@ -1446,6 +1439,48 @@ input[role='switch']:checked::after {
   overflow: hidden;
   border-left: 1px solid var(--border);
   background: var(--panel);
+}
+
+/* 拖拽句柄：贴在浮层面板左缘，命中区 9px 但视觉只有 1px 分隔线。 */
+.structure-resizer {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  left: -1px;
+  width: 9px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.structure-resizer::after {
+  position: absolute;
+  top: 0;
+  left: 4px;
+  width: 1px;
+  height: 100%;
+  content: '';
+  background: transparent;
+  transition: background-color 140ms ease;
+}
+
+.structure-resizer:hover::after,
+.structure-resizer:focus-visible::after,
+.structure-resizer.is-dragging::after {
+  background: var(--accent);
+}
+
+.structure-resizer:focus-visible {
+  outline: none;
+}
+
+/* 拖拽期间禁止全局选中，否则鼠标划过会选到面板内容。 */
+body.is-resizing-structure {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .structure-header {
@@ -1461,7 +1496,10 @@ input[role='switch']:checked::after {
 .structure-header h2 { margin: 3px 0 0; color: var(--text); font-family: var(--font-headline); font-size: 14px; }
 .structure-eyebrow { color: var(--text-faint); font-family: var(--font-label); font-size: 9px; letter-spacing: .1em; }
 .structure-tree { min-height: 0; flex: 1; overflow: auto; padding: 10px 0 20px; }
-.structure-row { display: grid; grid-template-columns: 22px minmax(72px, 1fr) minmax(0, 1fr); align-items: center; min-width: 0; min-height: 30px; gap: 4px; padding: 0 12px 0 calc(10px + var(--structure-indent)); }
+/* 键名列优先吃掉多余宽度：键名 1.4fr、值 0.6fr。
+   原先两列都是 1fr，而键名列里还塞着类型徽标（STRING 约 50px），
+   键名文字实际可用宽度不到一半，面板拉宽也救不回来（多出的宽度一半流向值列）。 */
+.structure-row { display: grid; grid-template-columns: 22px minmax(96px, 1.4fr) minmax(0, 0.6fr); align-items: center; min-width: 0; min-height: 30px; gap: 4px; padding: 0 12px 0 calc(10px + var(--structure-indent)); }
 .structure-row:hover { background: var(--panel-hover); }
 .structure-toggle, .structure-spacer { width: 22px; height: 24px; flex: 0 0 22px; }
 .structure-key { display: flex; align-items: center; min-width: 0; max-width: 100%; gap: 6px; padding: 3px 4px; overflow: hidden; border: 0; color: var(--text); background: transparent; font-family: var(--font-mono); font-size: 11px; text-align: left; }
@@ -1538,36 +1576,6 @@ input[role='switch']:checked::after {
   min-width: 0;
   gap: 10px;
   padding: 0 10px 0 12px;
-}
-
-.view-nav {
-  display: flex;
-  align-items: stretch;
-  gap: 4px;
-  padding: 0 16px;
-  border-top: 1px solid var(--border);
-}
-
-.view-nav button {
-  min-width: 56px;
-  height: 34px;
-  padding: 0 12px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  color: var(--text-muted);
-  background: transparent;
-  font-family: var(--font-label);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.view-nav button:hover,
-.view-nav button.is-active {
-  color: var(--accent);
-}
-
-.view-nav button.is-active {
-  border-bottom-color: var(--accent);
 }
 
 .actionbar {
@@ -1675,8 +1683,6 @@ input[role='switch']:checked::after {
   .app-header { grid-template-rows: 38px 30px; }
   .header-topline { grid-template-columns: 25px minmax(0, 1fr) auto; column-gap: 7px; padding: 0 5px 0 7px; }
   .header-topline .brand strong { display: none; }
-  .view-nav { padding: 0 4px; }
-  .view-nav button { min-width: 0; padding: 0 8px; }
   .status-pill { max-width: 42%; }
   .toast { top: 123px; }
 }
@@ -1738,7 +1744,6 @@ select {
 }
 
 .brand strong,
-.sidebar-brand span,
 .history-header h1,
 .settings-dialog h2 {
   font-family: var(--font-headline);
@@ -1896,4 +1901,176 @@ select {
 
 @media (max-width: 1023px) {
   .structure-panel { display: none; }
+}
+
+/* P0 工作区：文档标签、视图切换和操作按钮合并为顶栏一行。 */
+.app-shell { grid-template-rows: 48px minmax(0, 1fr); }
+.app-header { grid-template-rows: 48px; }
+.header-topline {
+  grid-template-columns: 240px minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 0 8px;
+}
+/* 品牌占左、折叠按钮靠右。原先只有按钮且 justify-content: flex-end，
+   左侧留下整条空白（宽度等于侧栏 240px 减按钮），视觉上很突兀。 */
+.header-sidebar-slot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 4px 0 12px;
+}
+.header-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  margin-right: auto;
+}
+.header-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border-radius: 5px;
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+.header-brand-text {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-headline);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 侧栏折叠后槽位只剩 28px，容不下品牌文字，只保留图标。 */
+.app-header.is-sidebar-collapsed .header-sidebar-slot { padding-left: 0; }
+.app-header.is-sidebar-collapsed .header-brand { display: none; }
+.header-sidebar-toggle { width: 28px; height: 28px; }
+.app-header.is-sidebar-collapsed .header-topline { grid-template-columns: 28px minmax(0, 1fr) auto; }
+.header-documents {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+}
+.header-documents .tabs-scroll { min-width: 0; }
+.header-documents .document-tab { min-width: 112px; height: 48px; }
+.header-documents .new-tab-button { height: 48px; }
+.header-documents .tab-close { opacity: 0; }
+.header-documents .document-tab:hover .tab-close,
+.header-documents .document-tab.is-active .tab-close,
+.header-documents .tab-close:focus-visible { opacity: 1; }
+.title-actions { min-width: 0; }
+.center-workspace { grid-template-rows: 50px minmax(0, 1fr) 34px; }
+.sidebar { width: 240px; flex-basis: 240px; }
+.sidebar-footer { margin-top: auto; }
+.sidebar-docs-button { width: 100%; }
+
+.tree-view { display: flex; flex-direction: column; height: 100%; padding: 0; overflow: hidden; }
+.tree-toolbar {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-subtle);
+  font-family: var(--font-body);
+}
+.tree-toolbar-title { margin-right: auto; color: var(--text-muted); font-size: 11px; font-weight: 600; }
+.tree-toolbar-button { min-height: 26px; gap: 4px; padding: 0 8px; font-size: 11px; }
+.tree-virtual-scroll { position: relative; min-height: 0; flex: 1; overflow: auto; }
+.tree-virtual-content { position: relative; min-width: max-content; }
+.tree-flat-row { left: 0; }
+.tree-flat-row.is-highlighted .tree-row {
+  background: var(--panel-active);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.tree-flat-row.is-highlighted .tree-path { font-weight: 700; }
+.tree-row { height: 28px; min-height: 28px; }
+.tree-subtree-actions { display: inline-flex; gap: 1px; margin-left: auto; opacity: 0; }
+.tree-row:hover .tree-subtree-actions,
+.tree-flat-row:focus-within .tree-subtree-actions,
+.tree-flat-row:focus-visible .tree-subtree-actions { opacity: 1; }
+.tree-subtree-button { width: 22px; height: 22px; }
+.sidebar-search { padding: 0 2px; }
+.sidebar-search-input { display: block; width: 100%; height: 32px; padding: 0 9px; color: var(--text); font-size: 11px; }
+.sidebar-search-results { display: grid; gap: 3px; margin-top: 10px; }
+.sidebar-search-summary { padding: 3px 7px; color: var(--text-faint); font-size: 10px; }
+.sidebar-search-error { margin: 4px 7px; color: var(--danger); font-size: 11px; line-height: 1.45; }
+.sidebar-search-hit { display: flex; align-items: center; min-width: 0; justify-content: space-between; gap: 8px; padding: 6px 7px; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; text-align: left; }
+.sidebar-search-hit:hover { color: var(--text); background: var(--panel-hover); }
+.sidebar-search-hit code { min-width: 0; overflow: hidden; color: var(--accent); font: 10px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-search-hit span { flex: 0 0 auto; color: var(--text-faint); font-size: 10px; }
+
+.app-main-row { position: relative; }
+.workspace-panel-layer {
+  position: absolute;
+  z-index: 8;
+  top: 50px;
+  right: 12px;
+  bottom: 34px;
+  pointer-events: none;
+}
+.workspace-float-panel {
+  display: flex;
+  width: min(320px, calc(100vw - 32px));
+  min-width: 0;
+  max-height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+.workspace-float-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 42px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+  font-family: var(--font-label);
+  font-size: 12px;
+}
+.workspace-float-panel .sidebar-search { overflow: auto; padding: 0 10px 12px; }
+/* 宽度由 --structure-width 驱动（App 层按用户拖拽写入内联样式），缺省 288px 与改造前一致。
+   position: relative 是给拖拽句柄做定位上下文用的。 */
+.schema-panel {
+  position: relative;
+  width: var(--structure-width, 288px);
+  max-width: calc(100vw - 32px);
+}
+.schema-panel .structure-panel {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  border-left: 0;
+}
+.panel-actions { flex: 0 0 auto; }
+.panel-actions .tool-button.is-active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+@media (max-width: 700px) {
+  .app-shell { grid-template-rows: 42px minmax(0, 1fr); }
+  .app-header { grid-template-rows: 42px; }
+  .header-topline { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 2px; padding: 0 4px; }
+  .app-header.is-sidebar-collapsed .header-topline { grid-template-columns: 28px minmax(0, 1fr) auto; }
+  .header-documents .document-tab { height: 42px; min-width: 104px; }
+  .header-documents .new-tab-button { height: 42px; }
+  .title-actions .icon-button { width: 27px; }
+  .center-workspace { grid-template-rows: 43px minmax(0, 1fr) 34px; }
+}
+
+@media (max-width: 430px) {
+  .header-topline { grid-template-columns: minmax(0, 1fr) auto; }
+  .header-sidebar-slot { display: none; }
+  .header-documents .document-tab { min-width: 96px; flex-basis: 130px; }
 }

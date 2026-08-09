@@ -19,6 +19,10 @@ export interface AppSettings {
   indent: 2 | 4 | 'tab';
   sortKeys: boolean;
   restoreSession: boolean;
+  sidebarCollapsed: boolean;
+  diffMode: 'structural' | 'line';
+  /** 结构面板宽度（px）。取值经 clampStructureWidth 收敛到 240–720。 */
+  structureWidth: number;
 }
 
 export interface RecentFile {
@@ -42,7 +46,9 @@ export type WorkerOperation =
   | 'repair'
   | 'escape'
   | 'unescape'
-  | 'stats';
+  | 'stats'
+  | 'query'
+  | 'diff';
 
 export type DiagnosticSeverity = 'error' | 'warning';
 
@@ -90,5 +96,5 @@ export type WorkerRequest = {
 };
 
 export type WorkerResponse =
-  | { requestId: string; ok: true; result: string; meta: ProcessingMeta }
+  | { requestId: string; ok: true; result: string; meta: ProcessingMeta; data?: unknown }
   | { requestId: string; ok: false; error: JsonDiagnostic };

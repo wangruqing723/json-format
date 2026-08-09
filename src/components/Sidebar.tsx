@@ -1,115 +1,58 @@
-import type { JsonDocument, RecentFile } from '../types';
+import type { WorkspaceView } from './AppHeader';
 import { Icon } from './Icon';
 
-export type SidebarTab =
-  | 'explorer' | 'schema' | 'variables' | 'requests' | 'snippets'
-  | 'docs' | 'status';
-
-interface SidebarProps {
-  activeTab: SidebarTab;
-  onChangeTab: (tab: SidebarTab) => void;
-  documents: JsonDocument[];
-  activeDocumentId: string;
-  recentFiles: RecentFile[];
-  onSelectDocument: (id: string) => void;
-  onOpenRecent: (path: string) => void;
+export interface SidebarProps {
+  activeView: WorkspaceView;
+  onChangeView: (view: WorkspaceView) => void;
+  collapsed: boolean;
   onNewDocument: () => void;
-  documentCount: number;
-  processingLabel: string | null;
-  persistenceIssue: string | null;
   onOpenDocs: () => void;
 }
 
-const primaryTabs: Array<{ id: SidebarTab; label: string; icon: string }> = [
-  { id: 'explorer', label: 'Explorer', icon: 'folder_open' },
-  { id: 'schema', label: 'Schema', icon: 'account_tree' },
-  { id: 'variables', label: 'Variables', icon: 'data_object' },
-  { id: 'requests', label: 'Requests', icon: 'api' },
-  { id: 'snippets', label: 'Snippets', icon: 'code' },
-];
-
-const footerTabs: Array<{ id: SidebarTab; label: string; icon: string }> = [
-  { id: 'docs', label: 'Docs', icon: 'help' },
-  { id: 'status', label: 'Status', icon: 'sensors' },
+const viewTabs: Array<{ id: WorkspaceView; label: string; icon: string }> = [
+  { id: 'text', label: '文本', icon: 'code' },
+  { id: 'tree', label: '树', icon: 'account_tree' },
+  { id: 'diff', label: 'Diff', icon: 'compare' },
+  { id: 'history', label: '历史', icon: 'history' },
 ];
 
 export function Sidebar({
-  activeTab,
-  onChangeTab,
-  documents,
-  activeDocumentId,
-  recentFiles,
-  onSelectDocument,
-  onOpenRecent,
+  activeView,
+  onChangeView,
+  collapsed,
   onNewDocument,
-  documentCount,
-  processingLabel,
-  persistenceIssue,
   onOpenDocs,
 }: SidebarProps) {
-  const renderTab = ({ id, label, icon }: { id: SidebarTab; label: string; icon: string }) => (
-    <button
-      key={id}
-      type="button"
-      role="tab"
-      aria-selected={activeTab === id}
-      className={activeTab === id ? 'sidebar-tab is-active' : 'sidebar-tab'}
-      onClick={() => id === 'docs' ? onOpenDocs() : onChangeTab(id)}
-    >
-      <Icon name={icon} size={17} />
-      <span>{label}</span>
-    </button>
-  );
+  // 折叠时整条侧栏让位给编辑区；展开/折叠由顶栏的按钮统一控制，
+  // 侧栏不再自带折叠句柄，避免两个控件做同一件事。
+  if (collapsed) return null;
 
   return (
     <aside className="sidebar" aria-label="主导航">
-      <div className="sidebar-brand"><Icon name="data_object" size={18} /><span>Workspace</span></div>
       <button className="new-project-button" type="button" onClick={onNewDocument}>
         <Icon name="note_add" size={17} />新建文档
       </button>
-      <nav className="sidebar-nav" role="tablist" aria-label="工作区导航">
-        {primaryTabs.map(renderTab)}
+      <nav className="sidebar-nav" role="tablist" aria-label="工作区视图">
+        {viewTabs.map(({ id, label, icon }) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={activeView === id}
+            className={activeView === id ? 'sidebar-tab is-active' : 'sidebar-tab'}
+            onClick={() => onChangeView(id)}
+          >
+            <Icon name={icon} size={17} />
+            <span>{label}</span>
+          </button>
+        ))}
       </nav>
-      <div className="sidebar-content">
-        {activeTab === 'explorer' && (
-          <>
-            <div className="sidebar-section-title">打开的文档</div>
-            <div className="sidebar-document-list">
-              {documents.map((document) => (
-                <button key={document.id} className={document.id === activeDocumentId ? 'sidebar-document is-active' : 'sidebar-document'} type="button" onClick={() => onSelectDocument(document.id)} title={document.filePath ?? document.title}>
-                  <span className={document.savedContent !== document.content ? 'dirty-dot is-dirty' : 'dirty-dot'} />
-                  <span>{document.title}</span>
-                </button>
-              ))}
-            </div>
-            <div className="sidebar-section-title">最近文件</div>
-            {recentFiles.length ? recentFiles.map((file) => (
-              <button key={file.path} className="sidebar-document sidebar-document--recent" type="button" onClick={() => onOpenRecent(file.path)} title={file.path}>
-                <Icon name="history" size={14} /><span>{file.name}</span>
-              </button>
-            )) : <span className="sidebar-empty">暂无最近文件</span>}
-          </>
-        )}
-        {activeTab === 'schema' && <div className="sidebar-hint">结构面板已切换</div>}
-        {(['variables', 'requests', 'snippets'] as SidebarTab[]).includes(activeTab) && (
-          <div className="sidebar-placeholder" role="status">
-            <Icon name="construction" size={25} />
-            <strong>暂未实现</strong>
-            <span>该工作区功能将在后续版本提供。</span>
-          </div>
-        )}
-        {activeTab === 'status' && (
-          <div className="sidebar-status-card">
-            <div><span>文档</span><strong>{documentCount}</strong></div>
-            <div><span>Worker</span><strong>{processingLabel ?? '空闲'}</strong></div>
-            <div><span>持久化</span><strong>{persistenceIssue ? '有告警' : '正常'}</strong></div>
-          </div>
-        )}
-        {activeTab === 'docs' && <div className="sidebar-hint">正在打开项目文档…</div>}
+      <div className="sidebar-content" aria-hidden="true" />
+      <div className="sidebar-footer">
+        <button className="sidebar-tab sidebar-docs-button" type="button" onClick={onOpenDocs}>
+          <Icon name="help" size={17} /><span>Docs</span>
+        </button>
       </div>
-      <nav className="sidebar-footer" role="tablist" aria-label="辅助导航">
-        {footerTabs.map(renderTab)}
-      </nav>
     </aside>
   );
 }

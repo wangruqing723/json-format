@@ -1,7 +1,7 @@
 {
   "name": "json-forge",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "icons:subset": "node scripts/build-icon-subset.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
