@@ -13,7 +13,7 @@ export interface NativeSessionDocumentEntry {
   id: DocumentId;
   title: string;
   filePath: string | null;
-  view: JsonDocument['view'];
+  collapsedPane: JsonDocument['collapsedPane'];
   language: 'json';
   createdAt: number;
   updatedAt: number;
@@ -256,7 +256,7 @@ class NativeSessionControllerImpl implements NativeSessionController {
           id: document.id,
           title: document.title,
           filePath: document.filePath,
-          view: document.view,
+          collapsedPane: document.collapsedPane,
           language: document.language,
           createdAt: document.createdAt,
           updatedAt: document.updatedAt,

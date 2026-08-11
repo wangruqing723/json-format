@@ -10,8 +10,7 @@ export interface SidebarProps {
 }
 
 const viewTabs: Array<{ id: WorkspaceView; label: string; icon: string }> = [
-  { id: 'text', label: '文本', icon: 'code' },
-  { id: 'tree', label: '树', icon: 'account_tree' },
+  { id: 'edit', label: '编辑', icon: 'code' },
   { id: 'diff', label: 'Diff', icon: 'compare' },
   { id: 'history', label: '历史', icon: 'history' },
 ];

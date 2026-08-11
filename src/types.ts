@@ -1,6 +1,10 @@
 export type DocumentId = string;
 
-export type DocumentView = 'text' | 'tree';
+/** 分屏中被折叠的那一侧；'none' 表示两侧都显示。 */
+export type CollapsedPane = 'none' | 'text' | 'tree';
+
+/** 分屏方向：row = 左右，column = 上下。 */
+export type SplitOrientation = 'row' | 'column';
 
 export interface JsonDocument {
   id: DocumentId;
@@ -8,7 +12,7 @@ export interface JsonDocument {
   filePath: string | null;
   content: string;
   savedContent: string;
-  view: DocumentView;
+  collapsedPane: CollapsedPane;
   language: 'json';
   createdAt: number;
   updatedAt: number;
@@ -21,8 +25,9 @@ export interface AppSettings {
   restoreSession: boolean;
   sidebarCollapsed: boolean;
   diffMode: 'structural' | 'line';
-  /** 结构面板宽度（px）。取值经 clampStructureWidth 收敛到 240–720。 */
-  structureWidth: number;
+  splitOrientation: SplitOrientation;
+  splitRatio: number;
+  allowRemoteImagePreview: boolean;
 }
 
 export interface RecentFile {

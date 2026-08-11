@@ -33,6 +33,20 @@ class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem
   }
 }
 
+function rawDocument(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'restored-doc',
+    title: 'restored.json',
+    filePath: null,
+    content: '{}',
+    savedContent: '{}',
+    language: 'json',
+    createdAt: 1,
+    updatedAt: 2,
+    ...overrides,
+  };
+}
+
 interface ScheduledTask {
   task: () => void;
   cancelled: boolean;
@@ -231,6 +245,80 @@ describe('workspace store', () => {
       path: 'C:\\data\\right.json',
       name: 'right.json',
     });
+  });
+
+  it('迁移旧 view 且持久化只输出 collapsedPane 新字段', () => {
+    storage.seed(
+      WORKSPACE_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        documents: [
+          rawDocument({ id: 'text-doc', view: 'text' }),
+          rawDocument({ id: 'tree-doc', view: 'tree' }),
+          rawDocument({ id: 'new-doc', collapsedPane: 'tree', view: 'text' }),
+          rawDocument({ id: 'missing-doc' }),
+          rawDocument({ id: 'invalid-doc', collapsedPane: 'invalid', view: 'text' }),
+        ],
+        activeDocumentId: 'text-doc',
+        diff: null,
+        settings: { structureWidth: 640, splitRatio: '0.7' },
+        recentFiles: [],
+      }),
+    );
+
+    const store = createStore();
+    expect(store.getState().documents).toHaveLength(5);
+    expect(store.getState().documents.map((document) => [document.id, document.collapsedPane])).toEqual([
+      ['text-doc', 'tree'],
+      ['tree-doc', 'text'],
+      ['new-doc', 'tree'],
+      ['missing-doc', 'none'],
+      ['invalid-doc', 'none'],
+    ]);
+    expect(store.getState().settings.splitRatio).toBe(0.5);
+    expect(store.getState().settings).not.toHaveProperty('structureWidth');
+
+    store.getState().flushPersistence();
+    const persisted = JSON.parse(storage.getItem(WORKSPACE_STORAGE_KEY) ?? '{}') as {
+      documents: Array<Record<string, unknown>>;
+      settings: Record<string, unknown>;
+    };
+    expect(persisted.documents).toHaveLength(5);
+    expect(persisted.documents.every((document) => !('view' in document))).toBe(true);
+    expect(persisted.documents.every((document) => 'collapsedPane' in document)).toBe(true);
+    expect(persisted.settings).not.toHaveProperty('structureWidth');
+  });
+
+  it('hydrate 对缺失或非法折叠字段保留文档并落到 none', () => {
+    const store = createStore();
+    store.getState().hydrateWorkspace({
+      documents: [
+        rawDocument({ id: 'missing-both' }),
+        rawDocument({ id: 'invalid-new', collapsedPane: 'sideways', view: 'tree' }),
+      ],
+      activeDocumentId: 'missing-both',
+      diff: null,
+      settings: store.getState().settings,
+      recentFiles: [],
+    } as never);
+
+    expect(store.getState().documents).toHaveLength(2);
+    expect(store.getState().documents.map((document) => document.collapsedPane)).toEqual([
+      'none',
+      'none',
+    ]);
+  });
+
+  it('脏 splitRatio 被拒绝并回到默认值，合法越界值仍会钳制', () => {
+    const store = createStore();
+    store.getState().updateSettings({ splitRatio: '0.7' as never });
+    expect(store.getState().settings.splitRatio).toBe(0.5);
+
+    store.getState().updateSettings({ splitRatio: Number.NaN });
+    expect(store.getState().settings.splitRatio).toBe(0.5);
+
+    store.getState().updateSettings({ splitRatio: 1 });
+    expect(store.getState().settings.splitRatio).toBe(0.8);
   });
 
   it('关闭会话恢复后不把文档内容写入 localStorage', () => {

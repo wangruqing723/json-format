@@ -1,4 +1,5 @@
 import { formatBytes } from '../utils/format';
+import type { JsonNode } from '../core/json-parser';
 
 interface InfoRowProps {
   path: string;
@@ -9,6 +10,7 @@ interface InfoRowProps {
   durationMs: number | null;
   restricted: boolean;
   persistenceIssue: string | null;
+  selectedNode: { path: string; type: JsonNode['type']; label: string; preview: string } | null;
 }
 
 export function InfoRow({
@@ -20,10 +22,16 @@ export function InfoRow({
   durationMs,
   restricted,
   persistenceIssue,
+  selectedNode,
 }: InfoRowProps) {
   return (
     <div className="info-row" aria-label="文档信息">
       <span className="info-path" title={path}>{path}</span>
+      {selectedNode && (
+        <span className="info-selected-node" title={selectedNode.preview}>
+          当前节点: {selectedNode.path} {selectedNode.type} / {selectedNode.label} {selectedNode.preview}
+        </span>
+      )}
       <span className="info-spacer" />
       {persistenceIssue && <span className="status-warning" title={persistenceIssue}>会话内容未持久化</span>}
       {restricted && <span className="status-warning">受限模式</span>}

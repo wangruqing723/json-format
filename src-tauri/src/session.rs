@@ -43,7 +43,10 @@ pub struct ManifestDocumentEntry {
     id: String,
     title: String,
     file_path: Option<String>,
-    view: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    collapsed_pane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    view: Option<String>,
     language: String,
     created_at: f64,
     updated_at: f64,
@@ -103,7 +106,7 @@ pub struct JsonDocument {
     file_path: Option<String>,
     content: String,
     saved_content: String,
-    view: String,
+    collapsed_pane: String,
     language: String,
     created_at: f64,
     updated_at: f64,
@@ -234,7 +237,12 @@ fn validate_request(request: &CommitWorkspaceSessionRequest) -> Result<(), Strin
     for document in &request.manifest.documents {
         validate_identifier(&document.id)?;
         validate_identifier(&document.snapshot_id)?;
-        if document.language != "json" || (document.view != "text" && document.view != "tree") {
+        let has_valid_collapsed_pane = matches!(
+            document.collapsed_pane.as_deref(),
+            Some("none") | Some("text") | Some("tree")
+        );
+        let has_legacy_view = matches!(document.view.as_deref(), Some("text") | Some("tree"));
+        if document.language != "json" || (!has_valid_collapsed_pane && !has_legacy_view && document.collapsed_pane.is_some()) {
             return Err("会话文档类型无效。".to_string());
         }
         if !document_ids.insert(document.id.clone()) {
@@ -443,13 +451,14 @@ fn build_load_result(
             &entry.snapshot_id,
         )?;
         snapshot_ids.insert(entry.id.clone(), entry.snapshot_id);
+        let collapsed_pane = normalize_collapsed_pane(&entry);
         documents.push(JsonDocument {
             id: entry.id,
             title: entry.title,
             file_path: entry.file_path,
             content: snapshot.content,
             saved_content: snapshot.saved_content,
-            view: entry.view,
+            collapsed_pane,
             language: entry.language,
             created_at: entry.created_at,
             updated_at: entry.updated_at,
@@ -466,6 +475,18 @@ fn build_load_result(
         },
         snapshot_ids,
     })
+}
+
+fn normalize_collapsed_pane(entry: &ManifestDocumentEntry) -> String {
+    match entry.collapsed_pane.as_deref() {
+        Some("none") | Some("text") | Some("tree") => entry.collapsed_pane.clone().unwrap(),
+        Some(_) => "none".into(),
+        None => match entry.view.as_deref() {
+            Some("text") => "tree".into(),
+            Some("tree") => "text".into(),
+            _ => "none".into(),
+        },
+    }
 }
 
 fn cleanup_old_generations(root: &Path) -> Result<(), String> {
@@ -557,7 +578,8 @@ mod tests {
                     id: "doc-1".into(),
                     title: "data.json".into(),
                     file_path: None,
-                    view: "text".into(),
+                    collapsed_pane: Some("none".into()),
+                    view: None,
                     language: "json".into(),
                     created_at: 1.0,
                     updated_at: 2.0,
@@ -575,6 +597,39 @@ mod tests {
                 saved_content: "".into(),
             }],
         }
+    }
+
+    #[test]
+    fn maps_legacy_view_to_the_collapsed_pane_without_dropping_the_document() {
+        let text_entry = ManifestDocumentEntry {
+            id: "doc-text".into(),
+            title: "text.json".into(),
+            file_path: None,
+            collapsed_pane: None,
+            view: Some("text".into()),
+            language: "json".into(),
+            created_at: 1.0,
+            updated_at: 2.0,
+            snapshot_id: "snap-text".into(),
+        };
+        let tree_entry = ManifestDocumentEntry {
+            id: "doc-tree".into(),
+            title: "tree.json".into(),
+            file_path: None,
+            collapsed_pane: None,
+            view: Some("tree".into()),
+            language: "json".into(),
+            created_at: 1.0,
+            updated_at: 2.0,
+            snapshot_id: "snap-tree".into(),
+        };
+
+        assert_eq!(normalize_collapsed_pane(&text_entry), "tree");
+        assert_eq!(normalize_collapsed_pane(&tree_entry), "text");
+        assert_eq!(normalize_collapsed_pane(&ManifestDocumentEntry {
+            view: None,
+            ..text_entry
+        }), "none");
     }
 
     #[test]

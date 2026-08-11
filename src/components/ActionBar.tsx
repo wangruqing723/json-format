@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { RecentFile } from '../types';
+import type { RecentFile, SplitOrientation } from '../types';
 import { Icon } from './Icon';
 
 export type StatusTone = 'success' | 'error' | 'warning' | 'info';
@@ -28,8 +28,12 @@ export interface ActionBarProps {
   status: { tone: StatusTone; text: string; line?: number; column?: number };
   onRevealDiagnostic?: () => void;
   moreActions: MoreAction[];
-  activePanel: 'search' | 'schema' | null;
-  onTogglePanel: (panel: 'search' | 'schema') => void;
+  activePanel: 'search' | null;
+  onTogglePanel: (panel: 'search') => void;
+  splitOrientation: SplitOrientation;
+  onToggleSplitOrientation: () => void;
+  onOpenTable: () => void;
+  tableDisabledReason: string | null;
 }
 
 export function ActionBar({
@@ -50,6 +54,10 @@ export function ActionBar({
   moreActions,
   activePanel,
   onTogglePanel,
+  splitOrientation,
+  onToggleSplitOrientation,
+  onOpenTable,
+  tableDisabledReason,
 }: ActionBarProps) {
   const [openMenu, setOpenMenu] = useState<'recent' | 'more' | null>(null);
   const recentMenuRef = useRef<HTMLDivElement>(null);
@@ -161,14 +169,24 @@ export function ActionBar({
           <Icon name="search" size={16} /><span>Search</span>
         </button>
         <button
-          className={`tool-button toolbar-secondary${activePanel === 'schema' ? ' is-active' : ''}`}
+          className={`tool-button toolbar-secondary${tableDisabledReason ? ' is-disabled' : ''}`}
           type="button"
-          onClick={() => onTogglePanel('schema')}
-          aria-pressed={activePanel === 'schema'}
-          data-tooltip="Schema"
-          aria-label="Schema"
+          onClick={() => { if (!tableDisabledReason) onOpenTable(); }}
+          aria-disabled={Boolean(tableDisabledReason)}
+          data-tooltip={tableDisabledReason ?? '表格视图'}
+          aria-label="表格"
         >
-          <Icon name="account_tree" size={16} /><span>Schema</span>
+          <span>表格</span>
+        </button>
+        <button
+          className="tool-button toolbar-secondary"
+          type="button"
+          onClick={onToggleSplitOrientation}
+          aria-pressed={splitOrientation === 'row'}
+          data-tooltip={splitOrientation === 'row' ? '切换为上下分屏' : '切换为左右分屏'}
+          aria-label={splitOrientation === 'row' ? '上下分屏' : '左右分屏'}
+        >
+          <span>{splitOrientation === 'row' ? '左右' : '上下'}</span>
         </button>
       </div>
     </div>

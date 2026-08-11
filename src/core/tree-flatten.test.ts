@@ -17,16 +17,54 @@ import {
 describe('tree-flatten', () => {
   it('处理空对象和纯数组', () => {
     const state = createExpandState();
-    // 容器不再产出闭合行（}/]）：展开的空对象只有自身一行。
-    expect(flattenTree(parseJson('{}'), state).map((row) => row.kind)).toEqual(['open']);
-    expect(flattenTree(parseJson('[1,2]'), state).map((row) => row.path)).toEqual(['$', '$[0]', '$[1]']);
+    const emptyObjectRows = flattenTree(parseJson('{}'), state);
+    expect(emptyObjectRows.map((row) => row.kind)).toEqual(['open', 'close']);
+    expect(emptyObjectRows[1]).toMatchObject({
+      path: '$',
+      label: '',
+      depth: 0,
+      kind: 'close',
+      ambiguous: false,
+      isLast: true,
+      parentType: null,
+    });
+
+    expect(flattenTree(parseJson('[1,2]'), state).map((row) => row.path)).toEqual([
+      '$', '$[0]', '$[1]', '$',
+    ]);
   });
 
-  it('展开的容器不产出闭合括号行', () => {
+  it('展开容器会产出与开启行配对的闭合行', () => {
     const rows = flattenTree(parseJson('{"a":{"b":1}}'), expandAll(createExpandState()));
-    // 树视图靠缩进表达层级，不需要 }/] 收尾行；确保没有任何行的标签是闭合括号。
-    expect(rows.some((row) => row.label === '}' || row.label === ']')).toBe(false);
-    expect(rows.every((row) => row.kind === 'open' || row.kind === 'value')).toBe(true);
+    expect(rows.map((row) => [row.kind, row.path, row.depth])).toEqual([
+      ['open', '$', 0],
+      ['open', '$.a', 1],
+      ['value', '$.a.b', 2],
+      ['close', '$.a', 1],
+      ['close', '$', 0],
+    ]);
+
+    const opens = rows.filter((row) => row.kind === 'open');
+    const closes = rows.filter((row) => row.kind === 'close');
+    expect(closes).toHaveLength(opens.length);
+    for (const open of opens) {
+      const close = closes.find((row) => row.path === open.path);
+      expect(close).toMatchObject({
+        label: '',
+        depth: open.depth,
+        ambiguous: false,
+        isLast: open.isLast,
+      });
+      expect(close?.parentType).toBe(open.path === '$' ? null : open.node.type);
+    }
+  });
+
+  it('闭合行携带正在闭合的数组类型', () => {
+    const rows = flattenTree(parseJson('{"items":[1]}'), expandAll(createExpandState()));
+    expect(rows.filter((row) => row.kind === 'close').map((row) => [row.path, row.parentType])).toEqual([
+      ['$.items', 'array'],
+      ['$', null],
+    ]);
   });
 
   it('迭代处理 20 层嵌套', () => {
@@ -73,6 +111,29 @@ describe('tree-flatten', () => {
 
     const collapsed = collapseSubtree(expanded, '$.a.b');
     expect(isSubtreeFullyExpanded(collapsed, a, '$.a', 1)).toBe(false);
+  });
+
+  it('隐藏路径会移除整棵子树，并重新计算兄弟的 isLast', () => {
+    const root = parseJson('{"first":1,"hidden":{"deep":{"value":2}},"last":3}');
+    const hiddenPaths = new Set(['$.hidden']);
+    const rows = flattenTree(root, expandAll(createExpandState()), hiddenPaths);
+
+    expect(rows.map((row) => row.path)).toEqual(['$', '$.first', '$.last', '$']);
+    expect(rows.some((row) => row.path.startsWith('$.hidden'))).toBe(false);
+    expect(rows.find((row) => row.path === '$.first')).toMatchObject({ isLast: false });
+    expect(rows.find((row) => row.path === '$.last')).toMatchObject({ isLast: true });
+    expect(countVisibleRows(root, expandAll(createExpandState()), hiddenPaths)).toBe(rows.length);
+  });
+
+  it('isSubtreeFullyExpanded 会忽略隐藏的容器后代', () => {
+    const root = parseJson('{"a":{"visible":{"value":1},"hidden":{"value":2}}}');
+    const a = root.type === 'object' ? root.entries[0].value : root;
+    const hiddenPaths = new Set(['$.a.hidden']);
+    const expanded = expandSubtree(createExpandState(), '$.a');
+
+    expect(isSubtreeFullyExpanded(expanded, a, '$.a', 1, hiddenPaths)).toBe(true);
+    expect(isSubtreeFullyExpanded(expanded, a, '$.a', 1, new Set(['$.a.visible']))).toBe(true);
+    expect(isSubtreeFullyExpanded(expanded, a, '$.a', 1, new Set(['$.a']))).toBe(false);
   });
 
   it('收起子树后 revealPath 能重新展开祖先链', () => {

@@ -36,6 +36,30 @@ export function isTauriRuntime() {
   return typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
 }
 
+/** 只把可交给系统浏览器处理的 HTTP(S) 地址视为外链。 */
+export function isExternalUrl(value: string): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const protocol = new URL(value.trim()).protocol.toLowerCase();
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/** 用系统默认浏览器打开 HTTP(S) 外链。 */
+export async function openExternalUrl(url: string): Promise<void> {
+  const value = url.trim();
+  if (!isExternalUrl(value)) throw new Error('只允许打开 http 或 https 外链');
+  if (isTauriRuntime()) {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(value);
+    return;
+  }
+  const opened = window.open(value, '_blank', 'noopener,noreferrer');
+  if (!opened) throw new Error('浏览器阻止了打开外链，请允许弹出窗口后重试');
+}
+
 function basename(path: string) {
   return path.split(/[\\/]/).pop() || '未命名.json';
 }

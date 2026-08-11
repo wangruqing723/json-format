@@ -122,6 +122,20 @@ export function SettingsDialog({ open, settings, onChange, onClose }: SettingsDi
               onChange={(event) => onChange({ restoreSession: event.target.checked })}
             />
           </label>
+
+          <label className="setting-row" htmlFor="remote-image-preview">
+            <span>
+              <strong>允许加载远程图片预览</strong>
+              <small>悬停时会向图片所在服务器发起请求，可能暴露本机 IP</small>
+            </span>
+            <input
+              id="remote-image-preview"
+              type="checkbox"
+              role="switch"
+              checked={settings.allowRemoteImagePreview}
+              onChange={(event) => onChange({ allowRemoteImagePreview: event.target.checked })}
+            />
+          </label>
         </div>
       </section>
     </div>

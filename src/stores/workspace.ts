@@ -1,11 +1,11 @@
 import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type { HistoryRecord } from '../components/HistoryView';
-import { clampStructureWidth, STRUCTURE_PANEL_DEFAULT_WIDTH } from '../core/structure-width';
+import { clampSplitRatio } from '../core/split-layout';
 import type {
   AppSettings,
+  CollapsedPane,
   DocumentId,
-  DocumentView,
   JsonDocument,
   RecentFile,
   WorkspaceState,
@@ -44,7 +44,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   restoreSession: true,
   sidebarCollapsed: false,
   diffMode: 'structural',
-  structureWidth: STRUCTURE_PANEL_DEFAULT_WIDTH,
+  splitOrientation: 'row',
+  splitRatio: 0.5,
+  allowRemoteImagePreview: false,
 };
 
 export interface OpenDocumentInput {
@@ -70,7 +72,7 @@ export interface WorkspaceStore extends WorkspaceState {
   reorderDocument: (id: DocumentId, targetIndex: number) => boolean;
   hydrateWorkspace: (snapshot: PersistedWorkspaceSnapshot) => void;
   setActive: (id: DocumentId) => void;
-  setView: (id: DocumentId, view: DocumentView) => void;
+  setCollapsedPane: (id: DocumentId, collapsedPane: CollapsedPane) => void;
   setDiff: (diff: WorkspaceState['diff']) => void;
   updateSettings: (patch: Partial<AppSettings>) => void;
   addRecentFile: (path: string, name: string) => void;
@@ -318,10 +320,10 @@ export function createWorkspaceStore(
         commit(() => ({ activeDocumentId: id }));
       },
 
-      setView: (id, view) => {
+      setCollapsedPane: (id, collapsedPane) => {
         commit((state) => ({
           documents: state.documents.map((document) =>
-            document.id === id ? { ...document, view, updatedAt: now() } : document,
+            document.id === id ? { ...document, collapsedPane, updatedAt: now() } : document,
           ),
         }));
       },
@@ -419,7 +421,7 @@ function createDocument(
     filePath,
     content,
     savedContent: content,
-    view: 'text',
+    collapsedPane: 'none',
     language: 'json',
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -433,25 +435,61 @@ function nextUntitledTitle(documents: JsonDocument[]): string {
   return `未命名 ${index}`;
 }
 
-function sanitizeDocuments(value: unknown): JsonDocument[] {
+export function sanitizeDocuments(value: unknown): JsonDocument[] {
   if (!Array.isArray(value)) return [];
-  return value.filter(isJsonDocument).map((document) => ({ ...document }));
+  return value.filter(isJsonDocumentShape).map((document) => ({
+    id: document.id,
+    title: document.title,
+    filePath: document.filePath,
+    content: document.content,
+    savedContent: document.savedContent,
+    collapsedPane: migrateCollapsedPane(document),
+    language: 'json',
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  }));
 }
 
-function isJsonDocument(value: unknown): value is JsonDocument {
+interface JsonDocumentShape {
+  id: string;
+  title: string;
+  filePath: string | null;
+  content: string;
+  savedContent: string;
+  collapsedPane?: unknown;
+  view?: unknown;
+  language: 'json';
+  createdAt: number;
+  updatedAt: number;
+}
+
+function isJsonDocumentShape(value: unknown): value is JsonDocumentShape {
   if (!value || typeof value !== 'object') return false;
-  const document = value as Partial<JsonDocument>;
+  const document = value as Partial<JsonDocumentShape>;
   return (
     typeof document.id === 'string' &&
     typeof document.title === 'string' &&
     (typeof document.filePath === 'string' || document.filePath === null) &&
     typeof document.content === 'string' &&
     typeof document.savedContent === 'string' &&
-    (document.view === 'text' || document.view === 'tree') &&
     document.language === 'json' &&
     typeof document.createdAt === 'number' &&
     typeof document.updatedAt === 'number'
   );
+}
+
+function migrateCollapsedPane(document: JsonDocumentShape): CollapsedPane {
+  if (
+    document.collapsedPane === 'none' ||
+    document.collapsedPane === 'text' ||
+    document.collapsedPane === 'tree'
+  ) {
+    return document.collapsedPane;
+  }
+  if (document.collapsedPane !== undefined) return 'none';
+  if (document.view === 'text') return 'tree';
+  if (document.view === 'tree') return 'text';
+  return 'none';
 }
 
 function sanitizeDiff(
@@ -498,10 +536,14 @@ function sanitizeSettings(settings: Partial<AppSettings>): Partial<AppSettings> 
   if (settings.diffMode === 'structural' || settings.diffMode === 'line') {
     result.diffMode = settings.diffMode;
   }
-  // 宽度必须钳制而非直接采信：手改 localStorage 或旧版本遗留的越界值
-  // 会让面板宽到挤掉编辑区；NaN 更会把 CSS 变量变成 auto，面板直接塌掉。
-  if (typeof settings.structureWidth === 'number') {
-    result.structureWidth = clampStructureWidth(settings.structureWidth);
+  if (settings.splitOrientation === 'row' || settings.splitOrientation === 'column') {
+    result.splitOrientation = settings.splitOrientation;
+  }
+  if (typeof settings.splitRatio === 'number' && Number.isFinite(settings.splitRatio)) {
+    result.splitRatio = clampSplitRatio(settings.splitRatio);
+  }
+  if (typeof settings.allowRemoteImagePreview === 'boolean') {
+    result.allowRemoteImagePreview = settings.allowRemoteImagePreview;
   }
   return result;
 }
@@ -523,7 +565,7 @@ function readPersistedWorkspace(
     return {
       workspace: {
         version: 1,
-        documents: parsed.documents,
+        documents: sanitizeDocuments(parsed.documents),
         activeDocumentId: parsed.activeDocumentId,
         diff: parsed.diff,
         settings: { ...DEFAULT_SETTINGS, ...sanitizeSettings(parsed.settings ?? {}) },
@@ -557,7 +599,7 @@ function persistWorkspace(
     version: 1,
     ...(state.settings.restoreSession
       ? {
-          documents: state.documents,
+          documents: sanitizeDocuments(state.documents),
           activeDocumentId: state.activeDocumentId,
           diff: state.diff,
         }

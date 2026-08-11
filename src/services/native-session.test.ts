@@ -15,7 +15,7 @@ function documentFixture(content = '{}', id = 'doc-1'): JsonDocument {
     filePath: null,
     content,
     savedContent: '',
-    view: 'text',
+    collapsedPane: 'none',
     language: 'json',
     createdAt: 1,
     updatedAt: 2,

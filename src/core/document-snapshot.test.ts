@@ -8,7 +8,7 @@ const document: JsonDocument = {
   filePath: null,
   content: '{"value":1}',
   savedContent: '',
-  view: 'text',
+  collapsedPane: 'none',
   language: 'json',
   createdAt: 1,
   updatedAt: 1,

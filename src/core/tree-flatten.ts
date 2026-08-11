@@ -1,7 +1,9 @@
 import type { JsonNode } from './json-parser';
 import { propertyPath } from './json-path';
 
-export type FlatRowKind = 'value' | 'open';
+export type FlatRowKind = 'value' | 'open' | 'close';
+
+type ParentType = 'object' | 'array' | null;
 
 export interface FlatRow {
   path: string;
@@ -11,6 +13,8 @@ export interface FlatRow {
   kind: FlatRowKind;
   hasChildren: boolean;
   ambiguous: boolean;
+  isLast: boolean;
+  parentType: ParentType;
 }
 
 export type ExpandBaseline = 'default' | 'all' | 'none';
@@ -143,29 +147,41 @@ function pathDepth(path: string): number {
   return depth;
 }
 
-interface StackNode {
-  kind: 'node';
+interface ChildEntry {
   node: JsonNode;
   path: string;
   label: string;
-  depth: number;
   ambiguous: boolean;
 }
 
-type StackEntry = StackNode;
+interface StackNode extends ChildEntry {
+  kind: 'node';
+  depth: number;
+  isLast: boolean;
+  parentType: ParentType;
+}
 
-function isContainer(node: JsonNode): boolean {
+interface CloseNode {
+  kind: 'close';
+  node: JsonNode;
+  path: string;
+  depth: number;
+  isLast: boolean;
+  parentType: ParentType;
+}
+
+type StackEntry = StackNode | CloseNode;
+
+function isContainer(node: JsonNode): node is Extract<JsonNode, { type: 'object' | 'array' }> {
   return node.type === 'object' || node.type === 'array';
 }
 
-function childEntries(node: JsonNode): StackNode[] {
+function childEntries(node: JsonNode): ChildEntry[] {
   if (node.type === 'array') {
     return node.items.map((child, index) => ({
-      kind: 'node',
       node: child,
       path: propertyPath('', String(index), true),
       label: `[${index}]`,
-      depth: 0,
       ambiguous: false,
     }));
   }
@@ -173,13 +189,33 @@ function childEntries(node: JsonNode): StackNode[] {
   const counts = new Map<string, number>();
   for (const entry of node.entries) counts.set(entry.key, (counts.get(entry.key) ?? 0) + 1);
   return node.entries.map((entry) => ({
-    kind: 'node',
     node: entry.value,
     path: propertyPath('', entry.key, false),
     label: entry.key,
-    depth: 0,
     ambiguous: (counts.get(entry.key) ?? 0) > 1,
   }));
+}
+
+function hasChildren(node: JsonNode): boolean {
+  return node.type === 'array'
+    ? node.items.length > 0
+    : node.type === 'object' && node.entries.length > 0;
+}
+
+function isHiddenPath(path: string, hiddenPaths?: ReadonlySet<string>): boolean {
+  if (!hiddenPaths || hiddenPaths.size === 0) return false;
+  for (const hiddenPath of hiddenPaths) {
+    if (isPathPrefix(hiddenPath, path)) return true;
+  }
+  return false;
+}
+
+function visibleChildren(
+  node: JsonNode,
+  parentPath: string,
+  hiddenPaths?: ReadonlySet<string>,
+): ChildEntry[] {
+  return childEntries(node).filter((child) => !isHiddenPath(parentPath + child.path, hiddenPaths));
 }
 
 export function isSubtreeFullyExpanded(
@@ -187,17 +223,21 @@ export function isSubtreeFullyExpanded(
   root: JsonNode,
   rootPath: string,
   rootDepth: number,
+  hiddenPaths?: ReadonlySet<string>,
 ): boolean {
   if (!isContainer(root)) return false;
+  if (isHiddenPath(rootPath, hiddenPaths)) return false;
   const stack = [{ node: root, path: rootPath, depth: rootDepth }];
   while (stack.length > 0) {
     const current = stack.pop()!;
     if (!isExpanded(state, current.path, current.depth)) return false;
     for (const child of childEntries(current.node)) {
+      const childPath = current.path + child.path;
+      if (isHiddenPath(childPath, hiddenPaths)) continue;
       if (!isContainer(child.node)) continue;
       stack.push({
         node: child.node,
-        path: current.path + child.path,
+        path: childPath,
         depth: current.depth + 1,
       });
     }
@@ -209,15 +249,45 @@ function appendVisibleRows(
   root: JsonNode,
   state: ExpandState,
   onRow: (row: FlatRow) => void,
+  hiddenPaths?: ReadonlySet<string>,
 ): void {
-  const stack: StackEntry[] = [{ kind: 'node', node: root, path: '$', label: '$', depth: 0, ambiguous: false }];
+  if (isHiddenPath('$', hiddenPaths)) return;
+
+  const stack: StackEntry[] = [{
+    kind: 'node',
+    node: root,
+    path: '$',
+    label: '$',
+    depth: 0,
+    ambiguous: false,
+    isLast: true,
+    parentType: null,
+  }];
   while (stack.length > 0) {
     const current = stack.pop()!;
-    const hasChildren = current.node.type === 'array'
-      ? current.node.items.length > 0
-      : current.node.type === 'object' && current.node.entries.length > 0;
+
+    if (current.kind === 'close') {
+      onRow({
+        path: current.path,
+        label: '',
+        node: current.node,
+        depth: current.depth,
+        kind: 'close',
+        hasChildren: false,
+        ambiguous: false,
+        isLast: current.isLast,
+        parentType: current.parentType,
+      });
+      continue;
+    }
+
+    const currentHasChildren = hasChildren(current.node);
     if (!isContainer(current.node) || !isExpanded(state, current.path, current.depth)) {
-      onRow({ ...current, kind: 'value', hasChildren });
+      onRow({
+        ...current,
+        kind: 'value',
+        hasChildren: currentHasChildren,
+      });
       continue;
     }
 
@@ -227,30 +297,54 @@ function appendVisibleRows(
       node: current.node,
       depth: current.depth,
       kind: 'open',
-      hasChildren,
+      hasChildren: currentHasChildren,
       ambiguous: current.ambiguous,
+      isLast: current.isLast,
+      parentType: current.parentType,
     });
-    const children = childEntries(current.node);
+
+    stack.push({
+      kind: 'close',
+      node: current.node,
+      path: current.path,
+      depth: current.depth,
+      isLast: current.isLast,
+      // 根节点没有父容器；其余 close 行需要携带正在闭合的容器类型。
+      parentType: current.path === '$' ? null : current.node.type,
+    });
+
+    const children = visibleChildren(current.node, current.path, hiddenPaths);
     for (let index = children.length - 1; index >= 0; index--) {
       const child = children[index];
       stack.push({
         ...child,
+        kind: 'node',
         path: current.path + child.path,
         depth: current.depth + 1,
+        isLast: index === children.length - 1,
+        parentType: current.node.type,
       });
     }
   }
 }
 
-export function flattenTree(root: JsonNode, state: ExpandState): FlatRow[] {
+export function flattenTree(
+  root: JsonNode,
+  state: ExpandState,
+  hiddenPaths?: ReadonlySet<string>,
+): FlatRow[] {
   const rows: FlatRow[] = [];
-  appendVisibleRows(root, state, (row) => rows.push(row));
+  appendVisibleRows(root, state, (row) => rows.push(row), hiddenPaths);
   return rows;
 }
 
-export function countVisibleRows(root: JsonNode, state: ExpandState): number {
+export function countVisibleRows(
+  root: JsonNode,
+  state: ExpandState,
+  hiddenPaths?: ReadonlySet<string>,
+): number {
   let count = 0;
-  appendVisibleRows(root, state, () => { count++; });
+  appendVisibleRows(root, state, () => { count++; }, hiddenPaths);
   return count;
 }
 

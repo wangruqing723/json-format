@@ -1,4 +1,4 @@
-import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createRef } from 'react';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,6 @@ import { AppHeader } from './AppHeader';
 import { ConfirmDialog } from './ConfirmDialog';
 import { buildDiffRows, DiffView } from './DiffView';
 import { SettingsDialog } from './SettingsDialog';
-import { StructurePanel } from './StructurePanel';
 import { ICON_CODEPOINTS } from './Icon';
 import { TreeView, type TreeViewHandle } from './TreeView';
 import { parseJson } from '../core/json-parser';
@@ -35,7 +34,7 @@ function documentFixture(id: string, title: string, content: string): JsonDocume
     content,
     savedContent: content,
     filePath: null,
-    view: 'text',
+    collapsedPane: 'none',
     language: 'json',
     createdAt: 1,
     updatedAt: 1,
@@ -179,10 +178,11 @@ describe('AppHeader', () => {
 describe('TreeView', () => {
   it('展开节点并复制 JSONPath', () => {
     const onCopy = vi.fn();
-    render(<TreeView root={parseJson('{"user":{"name":"Ada"}}')} parseError={null} hasDuplicates={false} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={onCopy} />);
+    const onSelectPath = vi.fn();
+    render(<TreeView root={parseJson('{"user":{"name":"Ada"}}')} parseError={null} hasDuplicates={false} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={onCopy} onSelectPath={onSelectPath} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'user' }));
-    expect(onCopy).toHaveBeenCalledWith('$.user', '路径');
+    fireEvent.click(screen.getByRole('button', { name: '"user"' }));
+    expect(onSelectPath).toHaveBeenCalledWith('$.user');
     expect(screen.getByText('"Ada"')).toBeInTheDocument();
   });
 
@@ -197,6 +197,13 @@ describe('TreeView', () => {
       onExpandChange,
       highlightPaths: new Set<string>(),
       onCopy: vi.fn(),
+      hiddenPaths: new Set<string>(),
+      onHide: vi.fn(),
+      onRestoreHidden: vi.fn(),
+      selectedPath: null,
+      onSelectPath: vi.fn(),
+      onDownloadNode: vi.fn(),
+      allowRemoteImages: false,
     };
     const { rerender } = render(<TreeView {...props} />);
 
@@ -221,12 +228,36 @@ describe('TreeView', () => {
     const onCopy = vi.fn();
     render(<TreeView root={parseJson('{"id":90071992547409931234,"key":1,"key":2}')} parseError={null} hasDuplicates={true} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={onCopy} />);
 
-    expect(screen.getByText('90071992547409931234')).toBeInTheDocument();
+    expect(screen.getByTitle('90071992547409931234')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('检测到重复键');
-    expect(screen.getAllByRole('button', { name: 'key' })).toHaveLength(2);
-    expect(screen.getAllByRole('button', { name: 'key' })[0]).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '复制 id 的值' }));
+    const duplicateRows = screen.getAllByRole('button', { name: '"key"' }).map((button) => button.closest('[data-tree-row]')!);
+    expect(duplicateRows).toHaveLength(2);
+    for (const row of duplicateRows) {
+      expect(within(row).getByRole('button', { name: '复制路径' })).toBeDisabled();
+    }
+    const idRow = screen.getByTitle('90071992547409931234').closest('[data-tree-row]')!;
+    fireEvent.click(within(idRow).getByRole('button', { name: '复制' }));
     expect(onCopy).toHaveBeenCalledWith('90071992547409931234', '值');
+  });
+
+  it('把安全外链交给上层处理，而不是在树行内绕过提示打开', () => {
+    const onOpenExternal = vi.fn();
+    render(
+      <TreeView
+        root={parseJson('{"url":"https://example.com/path"}')}
+        parseError={null}
+        hasDuplicates={false}
+        expandState={createExpandState()}
+        onExpandChange={vi.fn()}
+        highlightPaths={new Set()}
+        onCopy={vi.fn()}
+        onOpenExternal={onOpenExternal}
+      />,
+    );
+
+    expect(screen.queryByRole('img')).toBeNull();
+    fireEvent.click(screen.getByTitle('https://example.com/path'));
+    expect(onOpenExternal).toHaveBeenCalledWith('https://example.com/path');
   });
 
   it('大数组首屏只挂载虚拟窗口行', () => {
@@ -274,34 +305,6 @@ describe('DiffView', () => {
     expect(screen.getByRole('region', { name: '右侧（窄屏下方）：修改.json' })).toBeInTheDocument();
     expect(container.querySelectorAll('.diff-line--changed')).toHaveLength(2);
     expect(screen.getAllByText('变化').length).toBeGreaterThan(0);
-  });
-});
-
-describe('StructurePanel', () => {
-  it('长键和值保留完整 title，且键名列在宽面板中有上限', () => {
-    const key = 'a_very_long_schema_property_name_that_needs_truncation';
-    const value = 'x'.repeat(240);
-    const { container } = render(<StructurePanel root={parseJson(JSON.stringify({ [key]: value }))} parseError={null} />);
-    expect(screen.getByText(key)).toHaveAttribute('title', key);
-    expect([...container.querySelectorAll<HTMLElement>('.structure-summary')].find((element) => element.title.includes(value))).toBeTruthy();
-
-    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../styles.css'), 'utf8');
-    expect(css).toMatch(/\.structure-row\s*\{[^}]*grid-template-columns:\s*22px minmax\(96px, clamp\(132px, 42%, 260px\)\) minmax\(0, 1fr\)/s);
-    expect(css).toMatch(/\.structure-key-label\s*\{[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/s);
-    expect(css).toMatch(/\.structure-summary\s*\{[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/s);
-  });
-
-  it('深层嵌套将缩进封顶，避免结构面板横向扩张', () => {
-    let source = '{"leaf":true}';
-    for (let index = 7; index >= 0; index--) source = `{"level${index}":${source}}`;
-    const { container } = render(<StructurePanel root={parseJson(source)} parseError={null} />);
-    let collapsed = screen.queryAllByRole('button', { name: /展开/ });
-    while (collapsed.length) {
-      fireEvent.click(collapsed[0]);
-      collapsed = screen.queryAllByRole('button', { name: /展开/ });
-    }
-    const rows = [...container.querySelectorAll<HTMLElement>('.structure-row')];
-    expect(rows.at(-1)?.style.getPropertyValue('--structure-indent')).toBe('48px');
   });
 });
 

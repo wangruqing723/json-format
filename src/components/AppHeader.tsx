@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react'
 import type { DocumentId, JsonDocument } from '../types';
 import { Icon } from './Icon';
 
-export type WorkspaceView = 'text' | 'tree' | 'diff' | 'history';
+export type WorkspaceView = 'edit' | 'diff' | 'history';
 
 export interface AppHeaderProps {
   sidebarCollapsed: boolean;

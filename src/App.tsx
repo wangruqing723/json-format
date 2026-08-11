@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActionBar, type MoreAction } from './components/ActionBar';
 import { AboutDialog } from './components/AboutDialog';
 import { AppHeader, type WorkspaceView } from './components/AppHeader';
@@ -12,8 +12,8 @@ import { HistoryView, type HistoryRecord } from './components/HistoryView';
 import { SearchPanel } from './components/SearchPanel';
 import { Sidebar } from './components/Sidebar';
 import { SettingsDialog } from './components/SettingsDialog';
-import { StructurePanel } from './components/StructurePanel';
-import { StructureResizer } from './components/StructureResizer';
+import { SplitWorkspace } from './components/SplitWorkspace';
+import { TableView } from './components/TableView';
 import { EXPAND_ALL_CONFIRM_ROWS, TreeView, type TreeViewHandle } from './components/TreeView';
 import { isCurrentDocumentSnapshot } from './core/document-snapshot';
 import { parseJson, type JsonNode } from './core/json-parser';
@@ -27,6 +27,8 @@ import {
   revealPath,
   type ExpandState,
 } from './core/tree-flatten';
+import { minifyJsonNode } from './core/json-transform';
+import { nodeAtPath } from './core/json-table';
 import { JsonWorkerClient, WorkerCancelledError } from './services/worker-client';
 import {
   listenForJsonDrops,
@@ -37,6 +39,7 @@ import {
   saveJsonFileAs,
   writeClipboardText,
   isTauriRuntime,
+  openExternalUrl,
   type OpenedJsonFile,
 } from './services/platform';
 import {
@@ -151,7 +154,7 @@ export function App() {
     closeDocument,
     reorderDocument,
     setActive,
-    setView,
+    setCollapsedPane,
     setDiff,
     updateSettings,
     removeRecentFile,
@@ -163,12 +166,8 @@ export function App() {
   const resolvedTheme = useResolvedTheme(settings.theme);
   // 拖拽期间走本地 state：每帧都写 store 会连带触发 localStorage 持久化，
   // 松手时才 commit 一次。settings 侧的值变化（如设置面板重置）由下面的 effect 同步回来。
-  const [structureWidth, setStructureWidth] = useState(settings.structureWidth);
-  useEffect(() => setStructureWidth(settings.structureWidth), [settings.structureWidth]);
-  const commitStructureWidth = useCallback(
-    (width: number) => updateSettings({ structureWidth: width }),
-    [updateSettings],
-  );
+  const [splitRatio, setSplitRatio] = useState(settings.splitRatio);
+  useEffect(() => setSplitRatio(settings.splitRatio), [settings.splitRatio]);
   const editorRef = useRef<JsonEditorHandle>(null);
   const treeViewRef = useRef<TreeViewHandle>(null);
   const actionWorkerRef = useRef<JsonWorkerClient | null>(null);
@@ -190,11 +189,14 @@ export function App() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [activePanel, setActivePanel] = useState<'search' | 'schema' | null>(null);
+  const [activePanel, setActivePanel] = useState<'search' | null>(null);
   const [expandState, setExpandState] = useState<ExpandState>(createExpandState);
   const [searchInput, setSearchInput] = useState('');
   const [pendingTreeScrollPath, setPendingTreeScrollPath] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [hiddenPaths, setHiddenPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const [selectedPath, setSelectedPath] = useState<string | null>('$');
+  const [tableOpen, setTableOpen] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [nativeSessionReady, setNativeSessionReady] = useState(() => !isTauriRuntime());
   const [nativeSessionIssue, setNativeSessionIssue] = useState<string | null>(null);
@@ -229,21 +231,27 @@ export function App() {
 
   useEffect(() => {
     setExpandState(createExpandState());
+    setHiddenPaths(new Set());
+    setSelectedPath('$');
   }, [activeDocument?.id]);
 
   useEffect(() => {
-    if (!queryResult || activeDocument?.view !== 'tree') return;
-    setExpandState((current) => queryResult.hits.reduce((state, hit) => revealPath(state, hit.path), current));
-  }, [activeDocument?.view, queryResult]);
+    setHiddenPaths(new Set());
+  }, [activeDocument?.content]);
 
   useEffect(() => {
-    if (!pendingTreeScrollPath || activeDocument?.view !== 'tree') return;
+    if (!queryResult || activeDocument?.collapsedPane === 'tree') return;
+    setExpandState((current) => queryResult.hits.reduce((state, hit) => revealPath(state, hit.path), current));
+  }, [activeDocument?.collapsedPane, queryResult]);
+
+  useEffect(() => {
+    if (!pendingTreeScrollPath || activeDocument?.collapsedPane === 'tree') return;
     const frame = window.requestAnimationFrame(() => {
       treeViewRef.current?.scrollToPath(pendingTreeScrollPath);
       setPendingTreeScrollPath(null);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeDocument?.view, expandState, pendingTreeScrollPath]);
+  }, [activeDocument?.collapsedPane, expandState, pendingTreeScrollPath]);
 
   const showToast = useCallback((message: string, tone: ToastState['tone'] = 'neutral') => {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
@@ -270,14 +278,14 @@ export function App() {
     window.requestAnimationFrame(() => document.getElementById('workspace-search')?.focus());
   }, []);
 
-  const togglePanel = useCallback((panel: 'search' | 'schema') => {
+  const togglePanel = useCallback((panel: 'search') => {
     setActivePanel((current) => current === panel ? null : panel);
   }, []);
 
   const expandAllRows = useCallback(async () => {
     if (!parseResult.root) return;
     const next = expandAll(expandState);
-    const count = countVisibleRows(parseResult.root, next);
+    const count = countVisibleRows(parseResult.root, next, hiddenPaths);
     if (count > EXPAND_ALL_CONFIRM_ROWS) {
       const confirmed = await confirm({
         title: '展开全部节点',
@@ -287,7 +295,7 @@ export function App() {
       if (!confirmed) return;
     }
     setExpandState(next);
-  }, [confirm, expandState, parseResult.root]);
+  }, [confirm, expandState, hiddenPaths, parseResult.root]);
 
   const collapseAllRows = useCallback(() => {
     setExpandState((current) => collapseAll(current));
@@ -295,12 +303,13 @@ export function App() {
 
   const selectQueryHit = useCallback((hit: QueryHit) => {
     if (!activeDocument) return;
-    if (activeDocument.view === 'tree') {
+    if (activeDocument.collapsedPane !== 'tree') {
       setExpandState((current) => revealPath(current, hit.path));
       setPendingTreeScrollPath(hit.path);
-      return;
     }
-    setPendingReveal({ documentId: activeDocument.id, offset: hit.offset });
+    if (activeDocument.collapsedPane !== 'text') {
+      setPendingReveal({ documentId: activeDocument.id, offset: hit.offset });
+    }
   }, [activeDocument]);
 
   useEffect(() => {
@@ -518,7 +527,7 @@ export function App() {
 
   useEffect(() => {
     if (!pendingEdit || !activeDocument || pendingEdit.documentId !== activeDocument.id) return;
-    if (diff || activeDocument.view !== 'text' || !editorRef.current) return;
+    if (diff || activeDocument.collapsedPane === 'text' || !editorRef.current) return;
     const edit = pendingEdit;
     setPendingEdit(null);
     window.requestAnimationFrame(() => {
@@ -532,7 +541,7 @@ export function App() {
 
   useEffect(() => {
     if (!pendingReveal || !activeDocument || pendingReveal.documentId !== activeDocument.id) return;
-    if (diff || activeDocument.view !== 'text' || !editorRef.current) return;
+    if (diff || activeDocument.collapsedPane === 'text' || !editorRef.current) return;
     const reveal = pendingReveal;
     setPendingReveal(null);
     window.requestAnimationFrame(() => editorRef.current?.revealPosition(reveal.offset));
@@ -706,7 +715,6 @@ export function App() {
         updateContent(id, response.result);
       } else {
         setDiff(null);
-        setView(document.id, 'text');
         setPendingEdit({ documentId: document.id, content: response.result, source });
       }
       showToast(`${operationLabels[operation]}完成 · ${response.meta.durationMs.toFixed(1)} ms`, 'success');
@@ -717,7 +725,7 @@ export function App() {
     } finally {
       setProcessing((current) => current?.requestId === task.requestId ? null : current);
     }
-  }, [addHistoryRecord, historyOpen, newDocument, processing, setDiff, setView, showToast, updateContent]);
+  }, [addHistoryRecord, historyOpen, newDocument, processing, setDiff, showToast, updateContent]);
 
   const handleFormat = useCallback(() => {
     void runOperation(useWorkspaceStore.getState().settings.sortKeys ? 'sort' : 'format');
@@ -757,6 +765,53 @@ export function App() {
     }
   }, [showToast]);
 
+  const handleOpenExternal = useCallback((url: string) => {
+    let host = url;
+    try {
+      host = new URL(url).host || url;
+    } catch {
+      // TreeView 只会传入已通过 http/https 白名单的地址；解析失败时保留原值，
+      // 让平台层继续负责最终校验和错误提示。
+    }
+    showToast(`正在打开 ${host}`);
+    void openExternalUrl(url).catch((error) => {
+      showToast(error instanceof Error ? error.message : '无法打开外链', 'error');
+    });
+  }, [showToast]);
+
+  const handleSelectPath = useCallback((path: string) => {
+    setSelectedPath(path);
+  }, []);
+
+  const handleHidePath = useCallback((path: string) => {
+    setHiddenPaths((current) => {
+      const next = new Set(current);
+      next.add(path);
+      return next;
+    });
+    if (selectedPath && (selectedPath === path || selectedPath.startsWith(`${path}.`) || selectedPath.startsWith(`${path}[`))) {
+      setSelectedPath('$');
+    }
+  }, [selectedPath]);
+
+  const handleDownloadNode = useCallback(async (path: string, node: JsonNode) => {
+    try {
+      const saved = await saveJsonFileAs(minifyJsonNode(node), `${path.replace(/[^a-zA-Z0-9_$.-]+/g, '_')}.json`);
+      if (saved) showToast(saved.fellBackToDownload ? '节点已下载' : '节点已保存', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '节点保存失败', 'error');
+    }
+  }, [showToast]);
+
+  const selectedNode = useMemo(() => {
+    if (!selectedPath || !parseResult.root) return null;
+    const node = nodeAtPath(parseResult.root, selectedPath);
+    if (!node) return null;
+    const label = selectedPath === '$' ? '$' : selectedPath.match(/(?:\.([^.[\]]+)|\[\"((?:\\.|[^\"])*)\"\]|\[(\d+)\])$/)?.slice(1).find(Boolean) ?? selectedPath;
+    const preview = node.type === 'string' && typeof node.value === 'string' ? JSON.stringify(node.value) : minifyJsonNode(node);
+    return { path: selectedPath, type: node.type, label, preview: preview.length > 40 ? `${preview.slice(0, 40)}…` : preview };
+  }, [parseResult.root, selectedPath]);
+
   const enterDiff = useCallback(() => {
     const state = useWorkspaceStore.getState();
     if (byteLength(state.documents.find((document) => document.id === state.activeDocumentId)?.content ?? '') > DIFF_VIEW_LIMIT) {
@@ -772,14 +827,11 @@ export function App() {
     state.setDiff({ leftId: state.activeDocumentId, rightId: right.id });
   }, [showToast]);
 
-  const setTextOrTreeView = useCallback((view: 'text' | 'tree') => {
+  const setEditView = useCallback(() => {
     setHistoryOpen(false);
     const current = useWorkspaceStore.getState();
-    const document = current.documents.find((item) => item.id === current.activeDocumentId);
-    if (!document) return;
     current.setDiff(null);
-    current.setView(document.id, view);
-  }, [showToast]);
+  }, []);
 
   const changeView = useCallback((view: WorkspaceView) => {
     if (view === 'history') {
@@ -788,8 +840,8 @@ export function App() {
     }
     setHistoryOpen(false);
     if (view === 'diff') enterDiff();
-    else setTextOrTreeView(view);
-  }, [enterDiff, setTextOrTreeView]);
+    else setEditView();
+  }, [enterDiff, setEditView]);
 
   const restoreHistory = useCallback(async (record: HistoryRecord) => {
     if (record.content === null) return;
@@ -820,7 +872,6 @@ export function App() {
       targetId = state.newDocument(record.content, `${record.documentTitle} · 恢复`);
     }
     state.setDiff(null);
-    state.setView(targetId, 'text');
     setHistoryOpen(false);
     showToast('已恢复历史快照', 'success');
   }, [confirm, showToast]);
@@ -838,7 +889,6 @@ export function App() {
   const revealDiagnostic = useCallback((diagnostic: JsonDiagnostic) => {
     const state = useWorkspaceStore.getState();
     state.setDiff(null);
-    state.setView(state.activeDocumentId, 'text');
     setPendingReveal({ documentId: state.activeDocumentId, offset: diagnostic.offset });
   }, []);
 
@@ -854,10 +904,10 @@ export function App() {
       { id: 'escape', label: '转义字符串', keywords: 'escape', action: () => void runOperation('escape') },
       { id: 'unescape', label: '反转义字符串', keywords: 'unescape', action: () => void runOperation('unescape') },
     ] satisfies AppCommand[] : []),
-    { id: 'tree', label: '切换到树视图', keywords: 'tree', action: () => setTextOrTreeView('tree') },
+    { id: 'edit', label: '打开编辑视图', keywords: 'edit text tree', action: setEditView },
     { id: 'diff', label: '打开 JSON Diff', keywords: 'compare', action: enterDiff },
     { id: 'settings', label: '打开设置', keywords: 'preferences theme', action: openSettingsPanel },
-  ], [diff, enterDiff, handleFormat, handleOpen, handleSave, historyOpen, newDocument, openSettingsPanel, runOperation, setTextOrTreeView]);
+  ], [diff, enterDiff, handleFormat, handleOpen, handleSave, historyOpen, newDocument, openSettingsPanel, runOperation, setEditView]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -866,15 +916,15 @@ export function App() {
       if (mod && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         openCommandPanel();
-      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'e' && activeDocument?.view === 'tree' && !diff && !historyOpen) {
+      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'e' && activeDocument?.collapsedPane !== 'tree' && !diff && !historyOpen) {
         event.preventDefault();
         void expandAllRows();
-      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'w' && activeDocument?.view === 'tree' && !diff && !historyOpen) {
+      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'w' && activeDocument?.collapsedPane !== 'tree' && !diff && !historyOpen) {
         event.preventDefault();
         collapseAllRows();
       } else if (mod && event.key.toLowerCase() === 'f' && !diff && !historyOpen) {
         event.preventDefault();
-        if (activeDocument?.view === 'tree') focusSearch();
+        if (activeDocument?.collapsedPane !== 'tree') focusSearch();
         else editorRef.current?.openSearch();
       } else if (mod && event.key.toLowerCase() === 'n') {
         event.preventDefault();
@@ -898,7 +948,7 @@ export function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [activeDocument?.view, collapseAllRows, diff, expandAllRows, focusSearch, handleFormat, handleOpen, handleSave, handleSaveAs, historyOpen, nativeSessionReady, newDocument, openCommandPanel, requestClose]);
+  }, [activeDocument?.collapsedPane, collapseAllRows, diff, expandAllRows, focusSearch, handleFormat, handleOpen, handleSave, handleSaveAs, historyOpen, nativeSessionReady, newDocument, openCommandPanel, requestClose]);
 
   if (!nativeSessionReady) {
     return (
@@ -914,7 +964,15 @@ export function App() {
   const activeBytes = byteLength(activeDocument.content);
   const canSearch = !diff && !historyOpen;
   const transformsDisabled = Boolean(processing) || Boolean(diff) || historyOpen;
-  const activeView: WorkspaceView = historyOpen ? 'history' : diff ? 'diff' : activeDocument.view;
+  const activeView: WorkspaceView = historyOpen ? 'history' : diff ? 'diff' : 'edit';
+  const tableNode = selectedPath && parseResult.root
+    ? nodeAtPath(parseResult.root, selectedPath)
+    : parseResult.root;
+  const tableDisabledReason = parseResult.parseError || !tableNode
+    ? 'JSON 解析成功后才能打开表格'
+    : tableNode.type === 'object' || tableNode.type === 'array'
+      ? null
+      : '当前节点是标量，无法提取为表格';
   const activeStatus = {
     tone: activeDiagnostic?.severity === 'error'
       ? 'error' as const
@@ -958,7 +1016,7 @@ export function App() {
         onReorderDocument={reorderDocument}
         onNewDocument={() => newDocument()}
         canSearch={canSearch}
-        onSearch={() => canSearch && (activeDocument.view === 'tree' ? focusSearch() : editorRef.current?.openSearch())}
+        onSearch={() => canSearch && (activeDocument.collapsedPane === 'text' ? editorRef.current?.openSearch() : focusSearch())}
         onOpenCommandPalette={openCommandPanel}
         onOpenSettings={openSettingsPanel}
         theme={resolvedTheme}
@@ -992,6 +1050,10 @@ export function App() {
             moreActions={moreActions}
             activePanel={activePanel}
             onTogglePanel={togglePanel}
+            splitOrientation={settings.splitOrientation}
+            onToggleSplitOrientation={() => updateSettings({ splitOrientation: settings.splitOrientation === 'row' ? 'column' : 'row' })}
+            onOpenTable={() => setTableOpen(true)}
+            tableDisabledReason={tableDisabledReason}
           />
 
           <main className="workspace">
@@ -1009,33 +1071,50 @@ export function App() {
             onSwap={() => setDiff({ leftId: diff.rightId, rightId: diff.leftId })}
             onEdit={(id, content) => updateContent(id, content)}
           />
-        ) : activeDocument.view === 'tree' ? (
-          <TreeView
-            ref={treeViewRef}
-            root={parseResult.root}
-            parseError={parseResult.parseError}
-            hasDuplicates={parseResult.hasDuplicates}
-            expandState={expandState}
-            onExpandChange={setExpandState}
-            highlightPaths={highlightPaths}
-            onCopy={handleTreeCopy}
-            onRevealInText={(offset) => setPendingReveal({ documentId: activeDocument.id, offset })}
-          />
         ) : (
-          <JsonEditor
-            key={activeDocument.id}
-            ref={editorRef}
-            value={activeDocument.content}
-            theme={resolvedTheme}
-            diagnostic={activeDiagnostic}
-            onChange={(content) => {
-              // 内容未实际变化时直接跳过：清掉 metadata 却不触发重新校验，
-              // 会让状态永久停在「正在校验」（校验 effect 依赖 content，值相同不会重跑）。
-              if (content === activeDocument.content) return;
-              setMetadata((current) => ({ ...current, [activeDocument.id]: undefined }));
-              updateContent(activeDocument.id, content);
-            }}
-            onCursorChange={(line, column) => setCursor({ line, column })}
+          <SplitWorkspace
+            orientation={settings.splitOrientation}
+            ratio={splitRatio}
+            onRatioChange={setSplitRatio}
+            onRatioCommit={(ratio) => updateSettings({ splitRatio: ratio })}
+            collapsedPane={activeDocument.collapsedPane}
+            onCollapsedPaneChange={(pane) => setCollapsedPane(activeDocument.id, pane)}
+            textPane={(
+              <JsonEditor
+                key={activeDocument.id}
+                ref={editorRef}
+                value={activeDocument.content}
+                theme={resolvedTheme}
+                diagnostic={activeDiagnostic}
+                onChange={(content) => {
+                  if (content === activeDocument.content) return;
+                  setMetadata((current) => ({ ...current, [activeDocument.id]: undefined }));
+                  updateContent(activeDocument.id, content);
+                }}
+                onCursorChange={(line, column) => setCursor({ line, column })}
+              />
+            )}
+            treePane={(
+              <TreeView
+                ref={treeViewRef}
+                root={parseResult.root}
+                parseError={parseResult.parseError}
+                hasDuplicates={parseResult.hasDuplicates}
+                expandState={expandState}
+                onExpandChange={setExpandState}
+                highlightPaths={highlightPaths}
+                onCopy={handleTreeCopy}
+                onRevealInText={(offset) => setPendingReveal({ documentId: activeDocument.id, offset })}
+                hiddenPaths={hiddenPaths}
+                onHide={handleHidePath}
+                onRestoreHidden={() => setHiddenPaths(new Set())}
+                selectedPath={selectedPath}
+                onSelectPath={handleSelectPath}
+                onDownloadNode={handleDownloadNode}
+                allowRemoteImages={settings.allowRemoteImagePreview}
+                onOpenExternal={handleOpenExternal}
+              />
+            )}
           />
         )}
           </main>
@@ -1049,6 +1128,7 @@ export function App() {
         durationMs={activeMeta?.durationMs ?? null}
         restricted={activeBytes > AUTO_VALIDATE_LIMIT}
         persistenceIssue={nativeSessionIssue ?? persistenceIssue?.message ?? null}
+        selectedNode={selectedNode}
           />}
         </section>
         <div className="workspace-panel-layer">
@@ -1060,19 +1140,6 @@ export function App() {
               onSelectHit={selectQueryHit}
               onClose={() => setActivePanel(null)}
             />
-          )}
-          {activePanel === 'schema' && (
-            <div
-              className="workspace-float-panel schema-panel"
-              style={{ '--structure-width': `${structureWidth}px` } as CSSProperties}
-            >
-              <StructureResizer
-                width={structureWidth}
-                onWidthChange={setStructureWidth}
-                onCommit={commitStructureWidth}
-              />
-              <StructurePanel root={parseResult.root} parseError={parseResult.parseError} />
-            </div>
           )}
         </div>
       </div>
@@ -1094,6 +1161,13 @@ export function App() {
       <CommandPalette open={commandOpen} commands={commands} onClose={() => setCommandOpen(false)} />
       <SettingsDialog open={settingsOpen} settings={settings} onChange={updateSettings} onClose={() => setSettingsOpen(false)} />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <TableView
+        open={tableOpen}
+        root={parseResult.root}
+        sourcePath={selectedPath ?? '$'}
+        onClose={() => setTableOpen(false)}
+        onCopy={handleTreeCopy}
+      />
       {confirmDialog}
     </div>
   );

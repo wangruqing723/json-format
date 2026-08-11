@@ -1,5 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { JsonNode } from '../core/json-parser';
+import { externalUrlFromNode } from '../core/json-url';
 import { minifyJsonNode } from '../core/json-transform';
 import {
   collapseAll,
@@ -14,6 +15,7 @@ import {
   type ExpandState,
   type FlatRow,
 } from '../core/tree-flatten';
+import { openExternalUrl } from '../services/platform';
 import { useConfirm } from './ConfirmDialog';
 import { Icon } from './Icon';
 
@@ -30,6 +32,14 @@ export interface TreeViewProps {
   highlightPaths: ReadonlySet<string>;
   onCopy: (value: string, label: string) => void;
   onRevealInText?: (offset: number) => void;
+  hiddenPaths: ReadonlySet<string>;
+  onHide: (path: string) => void;
+  onRestoreHidden: () => void;
+  selectedPath: string | null;
+  onSelectPath: (path: string) => void;
+  onDownloadNode: (path: string, node: JsonNode) => void;
+  allowRemoteImages: boolean;
+  onOpenExternal?: (url: string) => void;
 }
 
 export interface TreeViewHandle {
@@ -41,10 +51,8 @@ function isContainer(node: JsonNode): boolean {
   return node.type === 'object' || node.type === 'array';
 }
 
-function summary(node: JsonNode): string {
-  if (node.type === 'array') return `Array(${node.items.length})`;
-  if (node.type === 'object') return `Object(${node.entries.length})`;
-  return node.raw;
+function containerCount(node: JsonNode): number {
+  return node.type === 'array' ? node.items.length : node.type === 'object' ? node.entries.length : 0;
 }
 
 function copyValue(node: JsonNode): string {
@@ -110,6 +118,26 @@ interface TreeRowProps {
   onExpandChange: (next: ExpandState) => void;
   highlightPaths: ReadonlySet<string>;
   onCopy: TreeViewProps['onCopy'];
+  onHide: TreeViewProps['onHide'];
+  onSelectPath: TreeViewProps['onSelectPath'];
+  onDownloadNode: TreeViewProps['onDownloadNode'];
+  allowRemoteImages: boolean;
+  onOpenExternal?: TreeViewProps['onOpenExternal'];
+  selectedPath: string | null;
+  hiddenPaths: ReadonlySet<string>;
+}
+
+const failedImageUrls = new Set<string>();
+
+function rowKeyLabel(row: FlatRow): string {
+  if (row.path === '$') return '$';
+  return row.label.startsWith('[') ? row.label : JSON.stringify(row.label);
+}
+
+function valueText(node: JsonNode): string {
+  if (node.type === 'string') return JSON.stringify(node.value);
+  if (node.type === 'number' || node.type === 'boolean' || node.type === 'null') return node.raw;
+  return '';
 }
 
 const TreeRow = memo(function TreeRow({
@@ -119,16 +147,41 @@ const TreeRow = memo(function TreeRow({
   onExpandChange,
   highlightPaths,
   onCopy,
+  onHide,
+  onSelectPath,
+  onDownloadNode,
+  allowRemoteImages,
+  onOpenExternal,
+  selectedPath,
+  hiddenPaths,
 }: TreeRowProps) {
+  const imageTimerRef = useRef<number | null>(null);
+  const [showImage, setShowImage] = useState(false);
   const container = isContainer(row.node);
+  const close = row.kind === 'close';
   const canOperate = container;
   const expanded = row.kind === 'open';
   const subtreeExpanded = canOperate
-    && isSubtreeFullyExpanded(expandState, row.node, row.path, row.depth);
+    && isSubtreeFullyExpanded(expandState, row.node, row.path, row.depth, hiddenPaths);
   const handleToggle = () => {
     if (!canOperate) return;
     onExpandChange(toggleExpand(expandState, row.path, row.depth));
   };
+  const fullValue = close ? '' : copyValue(row.node);
+  const imageUrl = !close && allowRemoteImages ? externalUrlFromNode(row.node) : null;
+  const startImagePreview = () => {
+    if (!imageUrl || failedImageUrls.has(imageUrl)) return;
+    if (imageTimerRef.current !== null) window.clearTimeout(imageTimerRef.current);
+    imageTimerRef.current = window.setTimeout(() => setShowImage(true), 400);
+  };
+  const stopImagePreview = () => {
+    if (imageTimerRef.current !== null) window.clearTimeout(imageTimerRef.current);
+    imageTimerRef.current = null;
+    setShowImage(false);
+  };
+  useEffect(() => () => {
+    if (imageTimerRef.current !== null) window.clearTimeout(imageTimerRef.current);
+  }, []);
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       event.preventDefault();
@@ -150,9 +203,32 @@ const TreeRow = memo(function TreeRow({
     if (expanded !== shouldExpand) onExpandChange(toggleExpand(expandState, row.path, row.depth));
   };
 
+  if (close) {
+    const closeToken = row.parentType === 'array' ? ']' : '}';
+    return (
+      <div
+        className="tree-flat-row tree-flat-row--close"
+        style={{ position: 'absolute', top: index * ROW_HEIGHT, width: '100%', height: ROW_HEIGHT }}
+        data-row-index={index}
+        role="listitem"
+      >
+        <div className="tree-row" style={{ '--tree-depth': row.depth } as React.CSSProperties}>
+          <span className="tree-indent-guides" aria-hidden="true">{Array.from({ length: row.depth }, (_, depth) => <i key={depth} />)}</span>
+          <span className="tree-close-token">{closeToken}{row.isLast ? '' : ','}</span>
+        </div>
+      </div>
+    );
+  }
+
+  const label = rowKeyLabel(row);
+  const token = container
+    ? expanded ? (row.node.type === 'array' ? '[' : '{') : `${row.node.type === 'array' ? '[' : '{'}…${containerCount(row.node)}${row.node.type === 'array' ? ']' : '}'}`
+    : valueText(row.node);
+  const comma = row.isLast ? '' : ',';
+
   return (
     <div
-      className={`tree-flat-row${highlightPaths.has(row.path) ? ' is-highlighted' : ''}`}
+      className={`tree-flat-row${highlightPaths.has(row.path) ? ' is-highlighted' : ''}${row.path === selectedPath ? ' is-selected' : ''}`}
       style={{ position: 'absolute', top: index * ROW_HEIGHT, width: '100%', height: ROW_HEIGHT }}
       data-tree-row
       data-row-index={index}
@@ -161,6 +237,7 @@ const TreeRow = memo(function TreeRow({
       onKeyDown={handleKeyDown}
     >
       <div className="tree-row" style={{ '--tree-depth': row.depth } as React.CSSProperties}>
+        <span className="tree-indent-guides" aria-hidden="true">{Array.from({ length: row.depth }, (_, depth) => <i key={depth} />)}</span>
         {canOperate ? (
           <button
             className="tree-toggle icon-button"
@@ -175,13 +252,38 @@ const TreeRow = memo(function TreeRow({
         <button
           className="tree-path"
           type="button"
-          data-tooltip={row.ambiguous ? '重复键路径不唯一' : `复制路径 ${row.path}`}
-          disabled={row.ambiguous}
-          onClick={() => onCopy(row.path, '路径')}
+          data-tooltip={row.ambiguous ? '重复键路径不唯一' : `选择 ${row.path}`}
+          onClick={() => onSelectPath(row.path)}
         >
-          {row.label}
+          {label}
         </button>
-        <span className={`tree-value tree-value--${row.node.type}`}>{summary(row.node)}</span>
+        {externalUrlFromNode(row.node) ? (
+          <button
+            type="button"
+            className={`tree-value tree-value--${row.node.type} tree-url-value`}
+            title={fullValue}
+            onClick={() => {
+              const url = externalUrlFromNode(row.node);
+              if (!url) return;
+              if (onOpenExternal) onOpenExternal(url);
+              else void openExternalUrl(url).catch(() => undefined);
+            }}
+            onMouseEnter={startImagePreview}
+            onMouseLeave={stopImagePreview}
+          >{token}{comma}</button>
+        ) : (
+          <span
+            className={`tree-value tree-value--${row.node.type}`}
+            title={fullValue}
+            onMouseEnter={startImagePreview}
+            onMouseLeave={stopImagePreview}
+          >{token}{comma}</span>
+        )}
+        {showImage && imageUrl && (
+          <span className="tree-image-preview" role="tooltip">
+            <img src={imageUrl} alt="远程图片预览" referrerPolicy="no-referrer" onError={() => { failedImageUrls.add(imageUrl); setShowImage(false); }} />
+          </span>
+        )}
         {canOperate && (
           <button
             className="icon-button tree-subtree-button"
@@ -195,15 +297,15 @@ const TreeRow = memo(function TreeRow({
             <Icon name={subtreeExpanded ? 'chevron_right' : 'expand_more'} size={13} />
           </button>
         )}
-        <button
-          type="button"
-          className="tree-copy icon-button"
-          data-tooltip="复制保真值"
-          aria-label={`复制 ${row.label} 的值`}
-          onClick={() => onCopy(copyValue(row.node), '值')}
-        >
-          <Icon name="content_copy" size={13} />
-        </button>
+        <span className="tree-row-actions" aria-label="节点操作">
+          <button type="button" onClick={() => onCopy(fullValue, '值')}>复制</button>
+          <span aria-hidden="true">|</span>
+          <button type="button" disabled={row.ambiguous} onClick={() => onCopy(row.path, '路径')}>复制路径</button>
+          <span aria-hidden="true">|</span>
+          <button type="button" onClick={() => onDownloadNode(row.path, row.node)}>下载</button>
+          <span aria-hidden="true">|</span>
+          <button type="button" onClick={() => onHide(row.path)}>删除</button>
+        </span>
       </div>
     </div>
   );
@@ -217,9 +319,17 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
   onExpandChange,
   highlightPaths,
   onCopy,
+  hiddenPaths = new Set<string>(),
+  onHide = () => undefined,
+  onRestoreHidden = () => undefined,
+  selectedPath = null,
+  onSelectPath = () => undefined,
+  onDownloadNode = () => undefined,
+  allowRemoteImages = false,
+  onOpenExternal,
 }: TreeViewProps, ref) {
   const { confirm, dialog: confirmDialog } = useConfirm();
-  const rows = useMemo(() => root ? flattenTree(root, expandState) : [], [expandState, root]);
+  const rows = useMemo(() => root ? flattenTree(root, expandState, hiddenPaths) : [], [expandState, hiddenPaths, root]);
   const virtual = useVirtualWindow(rows);
 
   useImperativeHandle(ref, () => ({
@@ -233,7 +343,7 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
   const requestExpandAll = async () => {
     if (!root) return;
     const next = expandAll(expandState);
-    const count = countVisibleRows(root, next);
+    const count = countVisibleRows(root, next, hiddenPaths);
     if (count > EXPAND_ALL_CONFIRM_ROWS) {
       const confirmed = await confirm({
         title: '展开全部节点',
@@ -265,6 +375,11 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
         <button type="button" className="secondary-button tree-toolbar-button" onClick={() => onExpandChange(collapseAll(expandState))}>
           <Icon name="chevron_right" size={14} />全部收起
         </button>
+        {hiddenPaths.size > 0 && (
+          <button type="button" className="secondary-button tree-toolbar-button" onClick={onRestoreHidden}>
+            恢复隐藏 ({hiddenPaths.size})
+          </button>
+        )}
       </div>
       {hasDuplicates && (
         <div className="tree-warning" role="status">
@@ -283,6 +398,13 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
               onExpandChange={onExpandChange}
               highlightPaths={highlightPaths}
               onCopy={onCopy}
+              onHide={onHide}
+              onSelectPath={onSelectPath}
+              onDownloadNode={onDownloadNode}
+              allowRemoteImages={allowRemoteImages}
+              onOpenExternal={onOpenExternal}
+              selectedPath={selectedPath}
+              hiddenPaths={hiddenPaths}
             />
           ))}
         </div>
