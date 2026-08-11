@@ -39,7 +39,7 @@ function StructureNode({ node, label, path, depth, onSelectPath }: { node: JsonN
         ) : <span className="structure-spacer" />}
         <button className="structure-key" type="button" onClick={() => onSelectPath?.(path)}>
           <span className={`structure-type structure-type--${node.type}`}>{node.type}</span>
-          <span>{label}</span>
+          <span className="structure-key-label" title={label}>{label}</span>
         </button>
         <span className="structure-summary" title={summary}>{summary}</span>
       </div>

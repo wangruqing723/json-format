@@ -39,6 +39,12 @@ import {
   isTauriRuntime,
   type OpenedJsonFile,
 } from './services/platform';
+import {
+  createNativeSessionController,
+  workspaceSnapshotFromState,
+  type NativeSessionController,
+  type SessionFlushResult,
+} from './services/native-session';
 import { isDocumentDirty, useWorkspaceStore } from './stores/workspace';
 import type { JsonDiagnostic, ProcessingMeta, WorkerOperation } from './types';
 import { formatBytes } from './utils/format';
@@ -80,6 +86,21 @@ export function transformBlockedReason(
   if (diff) return 'Diff 模式下不可变换内容，请先切换到文本或树视图';
   if (processing) return '正在处理，请稍候';
   return null;
+}
+
+export function shouldConfirmAppClose(
+  hasDirtyDocuments: boolean,
+  restoreSession: boolean,
+  flushResult: SessionFlushResult,
+): boolean {
+  return hasDirtyDocuments
+    && (!restoreSession || !flushResult.ok || !flushResult.recoverable);
+}
+
+export async function destroyAppWindow(
+  appWindow: { destroy: () => Promise<void> },
+): Promise<void> {
+  await appWindow.destroy();
 }
 
 const operationLabels: Record<WorkerOperation, string> = {
@@ -128,6 +149,7 @@ export function App() {
     updateContent,
     markSaved,
     closeDocument,
+    reorderDocument,
     setActive,
     setView,
     setDiff,
@@ -152,7 +174,10 @@ export function App() {
   const actionWorkerRef = useRef<JsonWorkerClient | null>(null);
   const validationWorkerRef = useRef<JsonWorkerClient | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const tauriCloseApprovedRef = useRef(false);
+  const nativeSessionControllerRef = useRef<NativeSessionController | null>(null);
+  const nativeSessionRestoreRef = useRef<Promise<void> | null>(null);
+  const nativeSessionBlockedRef = useRef(false);
+  const tauriClosingRef = useRef(false);
   const [diagnostics, setDiagnostics] = useState<Record<string, JsonDiagnostic | null>>({});
   const [metadata, setMetadata] = useState<Record<string, ProcessingMeta | undefined>>({});
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
@@ -171,6 +196,8 @@ export function App() {
   const [pendingTreeScrollPath, setPendingTreeScrollPath] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [nativeSessionReady, setNativeSessionReady] = useState(() => !isTauriRuntime());
+  const [nativeSessionIssue, setNativeSessionIssue] = useState<string | null>(null);
   const { confirm, dialog: confirmDialog } = useConfirm();
 
   if (!actionWorkerRef.current) actionWorkerRef.current = new JsonWorkerClient();
@@ -281,6 +308,66 @@ export function App() {
   }, [persistenceIssue, showToast]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    const controller = createNativeSessionController({
+      onIssue: (message) => {
+        if (disposed) return;
+        setNativeSessionIssue(message);
+        if (message) showToast(message, 'error');
+      },
+    });
+    nativeSessionControllerRef.current = controller;
+    nativeSessionBlockedRef.current = false;
+    const restore = controller.restore()
+      .then((result) => {
+        if (disposed) return;
+        if (result) useWorkspaceStore.getState().hydrateWorkspace(result.workspace);
+      })
+      .catch((error) => {
+        if (disposed) return;
+        nativeSessionBlockedRef.current = true;
+        const message = `无法恢复桌面会话：${error instanceof Error ? error.message : String(error)}`;
+        setNativeSessionIssue(message);
+        showToast(message, 'error');
+      })
+      .finally(() => {
+        if (!disposed) setNativeSessionReady(true);
+      });
+    nativeSessionRestoreRef.current = restore;
+    return () => {
+      disposed = true;
+      controller.dispose();
+      if (nativeSessionControllerRef.current === controller) {
+        nativeSessionControllerRef.current = null;
+        nativeSessionRestoreRef.current = null;
+      }
+    };
+  }, [showToast]);
+
+  useEffect(() => {
+    if (!isTauriRuntime() || !nativeSessionReady || nativeSessionBlockedRef.current) return;
+    nativeSessionControllerRef.current?.schedule(workspaceSnapshotFromState({
+      documents,
+      activeDocumentId,
+      diff,
+      settings,
+      recentFiles,
+    }));
+  }, [activeDocumentId, diff, documents, nativeSessionReady, recentFiles, settings]);
+
+  useEffect(() => {
+    if (!isTauriRuntime() || !nativeSessionReady || nativeSessionBlockedRef.current) return;
+    const flushOnBlur = () => {
+      const controller = nativeSessionControllerRef.current;
+      if (!controller) return;
+      void controller.flush(workspaceSnapshotFromState(useWorkspaceStore.getState()));
+    };
+    window.addEventListener('blur', flushOnBlur);
+    return () => window.removeEventListener('blur', flushOnBlur);
+  }, [nativeSessionReady, showToast]);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme;
     document.documentElement.classList.toggle('dark', resolvedTheme === 'dark');
     document.documentElement.classList.toggle('light', resolvedTheme === 'light');
@@ -296,26 +383,47 @@ export function App() {
       void import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
         if (disposed) return;
         const appWindow = getCurrentWindow();
-        unlisten = await appWindow.onCloseRequested(async (event) => {
-          flushPersistence();
-          if (tauriCloseApprovedRef.current) {
-            tauriCloseApprovedRef.current = false;
-            return;
-          }
-          const dirtyDocument = useWorkspaceStore.getState().documents.find(isDocumentDirty);
-          if (!dirtyDocument) return;
+        const stopListening = await appWindow.onCloseRequested(async (event) => {
           event.preventDefault();
-          const confirmed = await confirm({
-            title: '退出前保存提醒',
-            message: `“${dirtyDocument.title}”有未保存更改，仍要退出吗？`,
-            confirmLabel: '仍要退出',
-            tone: 'danger',
-          });
-          if (!confirmed) return;
-          tauriCloseApprovedRef.current = true;
-          flushPersistence();
-          await appWindow.close();
+          if (tauriClosingRef.current) return;
+          tauriClosingRef.current = true;
+          try {
+            await nativeSessionRestoreRef.current;
+            const state = useWorkspaceStore.getState();
+            const flushResult: SessionFlushResult = nativeSessionBlockedRef.current
+              ? { ok: false, recoverable: false, error: '原生会话恢复失败，未覆盖现有恢复数据。' }
+              : nativeSessionControllerRef.current
+                ? await nativeSessionControllerRef.current.flush(workspaceSnapshotFromState(state))
+                : { ok: false, recoverable: false, error: '原生会话协调器不可用。' };
+            const latestState = useWorkspaceStore.getState();
+            const dirtyDocument = latestState.documents.find(isDocumentDirty);
+            if (shouldConfirmAppClose(
+              Boolean(dirtyDocument),
+              latestState.settings.restoreSession,
+              flushResult,
+            )) {
+              const reason = latestState.settings.restoreSession
+                ? '恢复快照写入失败'
+                : '会话恢复已关闭';
+              const confirmed = await confirm({
+                title: '退出前保存提醒',
+                message: `${reason}，“${dirtyDocument?.title ?? '当前文档'}”有未保存更改。仍要退出吗？`,
+                confirmLabel: '仍要退出',
+                tone: 'danger',
+              });
+              if (!confirmed) {
+                tauriClosingRef.current = false;
+                return;
+              }
+            }
+            await destroyAppWindow(appWindow);
+          } catch (error) {
+            tauriClosingRef.current = false;
+            showToast(error instanceof Error ? error.message : '无法关闭应用窗口', 'error');
+          }
         });
+        if (disposed) stopListening();
+        else unlisten = stopListening;
       }).catch((error) => showToast(error instanceof Error ? error.message : '无法注册窗口关闭处理', 'error'));
       return () => {
         disposed = true;
@@ -355,12 +463,13 @@ export function App() {
   }, [openDocument, showToast]);
 
   useEffect(() => {
+    if (!nativeSessionReady) return;
     let unlisten: (() => void) | undefined;
     void listenForJsonDrops(acceptOpenedFiles)
       .then((cleanup) => { unlisten = cleanup; })
       .catch((error) => showToast(error instanceof Error ? error.message : '无法读取拖入的文件', 'error'));
     return () => unlisten?.();
-  }, [acceptOpenedFiles, showToast]);
+  }, [acceptOpenedFiles, nativeSessionReady, showToast]);
 
   useEffect(() => {
     if (!activeDocument) return;
@@ -752,6 +861,7 @@ export function App() {
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
+      if (!nativeSessionReady) return;
       const mod = event.metaKey || event.ctrlKey;
       if (mod && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -788,8 +898,16 @@ export function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [activeDocument?.view, collapseAllRows, diff, expandAllRows, focusSearch, handleFormat, handleOpen, handleSave, handleSaveAs, historyOpen, newDocument, openCommandPanel, requestClose]);
+  }, [activeDocument?.view, collapseAllRows, diff, expandAllRows, focusSearch, handleFormat, handleOpen, handleSave, handleSaveAs, historyOpen, nativeSessionReady, newDocument, openCommandPanel, requestClose]);
 
+  if (!nativeSessionReady) {
+    return (
+      <div className="app-shell workspace-loading" role="status" aria-live="polite">
+        <span className="spinner" />
+        <span>正在恢复工作区…</span>
+      </div>
+    );
+  }
   if (!activeDocument) return null;
   const activeDiagnostic = diagnostics[activeDocument.id];
   const activeMeta = metadata[activeDocument.id];
@@ -837,6 +955,7 @@ export function App() {
         activeDocumentId={activeDocument.id}
         onSelectDocument={selectDocument}
         onCloseDocument={requestClose}
+        onReorderDocument={reorderDocument}
         onNewDocument={() => newDocument()}
         canSearch={canSearch}
         onSearch={() => canSearch && (activeDocument.view === 'tree' ? focusSearch() : editorRef.current?.openSearch())}
@@ -929,7 +1048,7 @@ export function App() {
         indent={settings.indent}
         durationMs={activeMeta?.durationMs ?? null}
         restricted={activeBytes > AUTO_VALIDATE_LIMIT}
-        persistenceIssue={persistenceIssue?.message ?? null}
+        persistenceIssue={nativeSessionIssue ?? persistenceIssue?.message ?? null}
           />}
         </section>
         <div className="workspace-panel-layer">

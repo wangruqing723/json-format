@@ -8,6 +8,7 @@ import {
   expandSubtree,
   flattenTree,
   isExpanded,
+  isSubtreeFullyExpanded,
   countVisibleRows,
   revealPath,
   type ExpandState,
@@ -59,6 +60,19 @@ describe('tree-flatten', () => {
     expect(isExpanded(revealed, '$.a', 1)).toBe(true);
     expect(isExpanded(revealed, '$.a.b', 2)).toBe(true);
     expect(countVisibleRows(root, revealed)).toBe(flattenTree(root, revealed).length);
+  });
+
+  it('只有所有容器后代都展开时才判定完整子树已展开', () => {
+    const root = parseJson('{"a":{"b":{"c":1}}}');
+    const a = root.type === 'object' ? root.entries[0].value : root;
+    const initial = createExpandState();
+    expect(isSubtreeFullyExpanded(initial, a, '$.a', 1)).toBe(false);
+
+    const expanded = expandSubtree(initial, '$.a');
+    expect(isSubtreeFullyExpanded(expanded, a, '$.a', 1)).toBe(true);
+
+    const collapsed = collapseSubtree(expanded, '$.a.b');
+    expect(isSubtreeFullyExpanded(collapsed, a, '$.a', 1)).toBe(false);
   });
 
   it('收起子树后 revealPath 能重新展开祖先链', () => {

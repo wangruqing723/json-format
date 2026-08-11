@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import type { JsonDocument } from '../types';
 import {
   createWorkspaceStore,
   isDocumentDirty,
@@ -110,6 +111,84 @@ describe('workspace store', () => {
     expect(store.getState().closeDocument(secondId)).toBe(true);
     expect(store.getState().documents).toHaveLength(1);
     expect(store.getState().documents[0].content).toBe('');
+  });
+
+  it('重排标签只改变文档顺序，并持久化恢复该顺序', () => {
+    const store = createStore();
+    const firstId = store.getState().activeDocumentId;
+    const secondId = store.getState().newDocument('{}', 'second.json');
+    const thirdId = store.getState().newDocument('[]', 'third.json');
+    store.getState().setDiff({ leftId: firstId, rightId: secondId });
+    const activeBefore = store.getState().activeDocumentId;
+    const diffBefore = store.getState().diff;
+
+    expect(store.getState().reorderDocument(thirdId, 0)).toBe(true);
+    expect(store.getState().documents.map((document) => document.id)).toEqual([
+      thirdId,
+      firstId,
+      secondId,
+    ]);
+    expect(store.getState().activeDocumentId).toBe(activeBefore);
+    expect(store.getState().diff).toBe(diffBefore);
+
+    store.getState().flushPersistence();
+    expect(createStore().getState().documents.map((document) => document.id)).toEqual([
+      thirdId,
+      firstId,
+      secondId,
+    ]);
+  });
+
+  it('重排标签会归一化下标，同位或非法输入不触发持久化', () => {
+    const store = createStore();
+    const firstId = store.getState().activeDocumentId;
+    const secondId = store.getState().newDocument('{}');
+    const thirdId = store.getState().newDocument('[]');
+    store.getState().flushPersistence();
+    const callsBefore = storage.setItemCalls;
+
+    expect(store.getState().reorderDocument(secondId, 1)).toBe(false);
+    expect(store.getState().reorderDocument('missing', 0)).toBe(false);
+    expect(store.getState().reorderDocument(secondId, Number.NaN)).toBe(false);
+    expect(store.getState().reorderDocument(firstId, 99)).toBe(true);
+    store.getState().flushPersistence();
+
+    expect(store.getState().documents.map((document) => document.id)).toEqual([
+      secondId,
+      thirdId,
+      firstId,
+    ]);
+    expect(storage.setItemCalls).toBe(callsBefore + 1);
+  });
+
+  it('hydrate 会校验活动标签和 Diff，并在坏文档列表下回退为空白文档', () => {
+    const store = createStore();
+    const existing = store.getState().documents[0];
+    store.getState().hydrateWorkspace({
+      documents: [{ ...existing, id: 'restored', title: 'restored.json' }],
+      activeDocumentId: 'missing',
+      diff: { leftId: 'restored', rightId: 'missing' },
+      settings: { ...store.getState().settings, indent: 4 },
+      recentFiles: [{ path: '/tmp/a.json', name: 'a.json', openedAt: 10 }],
+    });
+
+    expect(store.getState()).toMatchObject({
+      activeDocumentId: 'restored',
+      diff: null,
+      settings: { indent: 4 },
+      recentFiles: [{ path: '/tmp/a.json' }],
+    });
+
+    store.getState().hydrateWorkspace({
+      documents: [] as JsonDocument[],
+      activeDocumentId: 'restored',
+      diff: null,
+      settings: store.getState().settings,
+      recentFiles: [],
+    });
+    expect(store.getState().documents).toHaveLength(1);
+    expect(store.getState().documents[0].content).toBe('');
+    expect(store.getState().activeDocumentId).toBe(store.getState().documents[0].id);
   });
 
   it('避免重复打开同一路径且保留当前未保存编辑', () => {

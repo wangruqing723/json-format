@@ -67,6 +67,8 @@ export interface WorkspaceStore extends WorkspaceState {
     savedContent?: string,
   ) => void;
   closeDocument: (id: DocumentId) => boolean;
+  reorderDocument: (id: DocumentId, targetIndex: number) => boolean;
+  hydrateWorkspace: (snapshot: PersistedWorkspaceSnapshot) => void;
   setActive: (id: DocumentId) => void;
   setView: (id: DocumentId, view: DocumentView) => void;
   setDiff: (diff: WorkspaceState['diff']) => void;
@@ -83,6 +85,14 @@ export interface WorkspaceStoreOptions {
   now?: () => number;
   createId?: () => string;
   schedulePersistence?: PersistenceScheduler;
+}
+
+export interface PersistedWorkspaceSnapshot {
+  documents: JsonDocument[];
+  activeDocumentId: DocumentId;
+  diff: WorkspaceState['diff'];
+  settings: AppSettings;
+  recentFiles: RecentFile[];
 }
 
 interface PersistedWorkspace {
@@ -256,6 +266,53 @@ export function createWorkspaceStore(
         return true;
       },
 
+      reorderDocument: (id, targetIndex) => {
+        const current = get();
+        const sourceIndex = current.documents.findIndex((document) => document.id === id);
+        if (sourceIndex < 0 || current.documents.length < 2 || !Number.isFinite(targetIndex)) {
+          return false;
+        }
+        const normalizedTarget = Math.max(
+          0,
+          Math.min(Math.trunc(targetIndex), current.documents.length - 1),
+        );
+        if (sourceIndex === normalizedTarget) return false;
+
+        commit((state) => {
+          const documents = [...state.documents];
+          const [document] = documents.splice(sourceIndex, 1);
+          documents.splice(normalizedTarget, 0, document);
+          return { documents };
+        });
+        return true;
+      },
+
+      hydrateWorkspace: (snapshot) => {
+        const nextSettings = {
+          ...DEFAULT_SETTINGS,
+          ...sanitizeSettings(snapshot.settings ?? {}),
+        };
+        const sanitizedDocuments = nextSettings.restoreSession
+          ? sanitizeDocuments(snapshot.documents)
+          : [];
+        const documents = sanitizedDocuments.length > 0
+          ? sanitizedDocuments
+          : [createDocument(createId(), now(), '', '未命名 1', null)];
+        const activeDocumentId = documents.some(
+          (document) => document.id === snapshot.activeDocumentId,
+        )
+          ? snapshot.activeDocumentId
+          : documents[0].id;
+        set({
+          documents,
+          activeDocumentId,
+          diff: sanitizeDiff(snapshot.diff, documents),
+          settings: nextSettings,
+          recentFiles: sanitizeRecentFiles(snapshot.recentFiles),
+          persistenceIssue: null,
+        });
+      },
+
       setActive: (id) => {
         if (!get().documents.some((document) => document.id === id)) return;
         commit(() => ({ activeDocumentId: id }));
@@ -312,6 +369,27 @@ export function createWorkspaceStore(
 
 export function isDocumentDirty(document: JsonDocument): boolean {
   return document.savedContent !== document.content;
+}
+
+export function readLegacyWorkspaceSnapshot(
+  storage: Pick<Storage, 'getItem'>,
+): PersistedWorkspaceSnapshot | null {
+  const { workspace } = readPersistedWorkspace(storage);
+  if (!workspace) return null;
+  const settings = { ...DEFAULT_SETTINGS, ...sanitizeSettings(workspace.settings) };
+  const documents = settings.restoreSession ? sanitizeDocuments(workspace.documents) : [];
+  const activeDocumentId = documents.some(
+    (document) => document.id === workspace.activeDocumentId,
+  )
+    ? (workspace.activeDocumentId as DocumentId)
+    : documents[0]?.id ?? '';
+  return {
+    documents,
+    activeDocumentId,
+    diff: sanitizeDiff(workspace.diff, documents),
+    settings,
+    recentFiles: sanitizeRecentFiles(workspace.recentFiles),
+  };
 }
 
 export interface BoundWorkspaceStore extends StoreApi<WorkspaceStore> {
@@ -434,7 +512,7 @@ interface PersistedWorkspaceReadResult {
 }
 
 function readPersistedWorkspace(
-  storage: WorkspaceStoreOptions['storage'],
+  storage: Pick<Storage, 'getItem'> | null | undefined,
 ): PersistedWorkspaceReadResult {
   if (!storage) return { workspace: null, issue: null };
   try {
@@ -597,7 +675,9 @@ function defaultPersistenceScheduler(task: () => void): () => void {
 
 function getDefaultStorage(): Storage | null {
   try {
-    return typeof window === 'undefined' ? null : window.localStorage;
+    return typeof window === 'undefined' || window.__TAURI_INTERNALS__
+      ? null
+      : window.localStorage;
   } catch {
     return null;
   }

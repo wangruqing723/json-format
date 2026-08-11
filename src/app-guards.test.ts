@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { transformBlockedReason } from './App';
+import { describe, expect, it, vi } from 'vitest';
+import { destroyAppWindow, shouldConfirmAppClose, transformBlockedReason } from './App';
 
 // 回归背景:历史视图下点「转义字符串」曾提示「Diff 模式下已禁用内容变换」。
 // 原因是守卫判了 diff || historyOpen，但提示文案硬编码成 Diff，
@@ -41,4 +41,28 @@ describe('transformBlockedReason', () => {
     ];
     expect(new Set(reasons).size).toBe(3);
   });
+});
+
+describe('shouldConfirmAppClose', () => {
+  it('可完整恢复时有脏文档也直接退出', () => {
+    expect(shouldConfirmAppClose(true, true, { ok: true, recoverable: true })).toBe(false);
+  });
+
+  it('无脏文档时不因快照失败阻止退出', () => {
+    expect(shouldConfirmAppClose(false, true, { ok: false, recoverable: false })).toBe(false);
+  });
+
+  it('关闭恢复或写入失败且有脏文档时确认', () => {
+    expect(shouldConfirmAppClose(true, false, { ok: true, recoverable: false })).toBe(true);
+    expect(shouldConfirmAppClose(true, true, { ok: false, recoverable: false })).toBe(true);
+  });
+});
+
+it('确认退出后直接销毁窗口，不再触发 closeRequested', async () => {
+  const destroy = vi.fn(async () => undefined);
+  const close = vi.fn(async () => undefined);
+  const appWindow = { destroy, close };
+  await destroyAppWindow(appWindow);
+  expect(destroy).toHaveBeenCalledOnce();
+  expect(close).not.toHaveBeenCalled();
 });

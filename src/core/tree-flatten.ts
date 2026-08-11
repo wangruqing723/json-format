@@ -182,6 +182,29 @@ function childEntries(node: JsonNode): StackNode[] {
   }));
 }
 
+export function isSubtreeFullyExpanded(
+  state: ExpandState,
+  root: JsonNode,
+  rootPath: string,
+  rootDepth: number,
+): boolean {
+  if (!isContainer(root)) return false;
+  const stack = [{ node: root, path: rootPath, depth: rootDepth }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (!isExpanded(state, current.path, current.depth)) return false;
+    for (const child of childEntries(current.node)) {
+      if (!isContainer(child.node)) continue;
+      stack.push({
+        node: child.node,
+        path: current.path + child.path,
+        depth: current.depth + 1,
+      });
+    }
+  }
+  return true;
+}
+
 function appendVisibleRows(
   root: JsonNode,
   state: ExpandState,

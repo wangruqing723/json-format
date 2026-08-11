@@ -9,6 +9,7 @@ import {
   expandSubtree,
   flattenTree,
   isExpanded,
+  isSubtreeFullyExpanded,
   toggleExpand,
   type ExpandState,
   type FlatRow,
@@ -122,6 +123,8 @@ const TreeRow = memo(function TreeRow({
   const container = isContainer(row.node);
   const canOperate = container;
   const expanded = row.kind === 'open';
+  const subtreeExpanded = canOperate
+    && isSubtreeFullyExpanded(expandState, row.node, row.path, row.depth);
   const handleToggle = () => {
     if (!canOperate) return;
     onExpandChange(toggleExpand(expandState, row.path, row.depth));
@@ -180,26 +183,17 @@ const TreeRow = memo(function TreeRow({
         </button>
         <span className={`tree-value tree-value--${row.node.type}`}>{summary(row.node)}</span>
         {canOperate && (
-          <span className="tree-subtree-actions">
-            <button
-              className="icon-button tree-subtree-button"
-              type="button"
-              aria-label={`展开子树 ${row.label}`}
-              data-tooltip="展开子树 (Shift →)"
-              onClick={() => onExpandChange(expandSubtree(expandState, row.path))}
-            >
-              <Icon name="expand_more" size={13} />
-            </button>
-            <button
-              className="icon-button tree-subtree-button"
-              type="button"
-              aria-label={`收起子树 ${row.label}`}
-              data-tooltip="收起子树 (Shift ←)"
-              onClick={() => onExpandChange(collapseSubtree(expandState, row.path))}
-            >
-              <Icon name="chevron_right" size={13} />
-            </button>
-          </span>
+          <button
+            className="icon-button tree-subtree-button"
+            type="button"
+            aria-label={`${subtreeExpanded ? '收起' : '展开'}子树 ${row.label}`}
+            data-tooltip={subtreeExpanded ? '收起子树 (Shift ←)' : '展开子树 (Shift →)'}
+            onClick={() => onExpandChange(subtreeExpanded
+              ? collapseSubtree(expandState, row.path)
+              : expandSubtree(expandState, row.path))}
+          >
+            <Icon name={subtreeExpanded ? 'chevron_right' : 'expand_more'} size={13} />
+          </button>
         )}
         <button
           type="button"

@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createRef } from 'react';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommandPalette } from './CommandPalette';
+import { AppHeader } from './AppHeader';
 import { ConfirmDialog } from './ConfirmDialog';
 import { buildDiffRows, DiffView } from './DiffView';
 import { SettingsDialog } from './SettingsDialog';
@@ -15,7 +16,10 @@ import { parseJson } from '../core/json-parser';
 import { createExpandState } from '../core/tree-flatten';
 import type { JsonDocument } from '../types';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function collectSourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -38,6 +42,140 @@ function documentFixture(id: string, title: string, content: string): JsonDocume
   };
 }
 
+function renderHeader(overrides: Partial<React.ComponentProps<typeof AppHeader>> = {}) {
+  const documents = [
+    documentFixture('one', 'One', '{}'),
+    documentFixture('two', 'Two', '[]'),
+    documentFixture('three', 'Three', 'null'),
+  ];
+  const props: React.ComponentProps<typeof AppHeader> = {
+    sidebarCollapsed: false,
+    onToggleSidebar: vi.fn(),
+    documents,
+    activeDocumentId: 'two',
+    onSelectDocument: vi.fn(),
+    onCloseDocument: vi.fn(),
+    onReorderDocument: vi.fn(),
+    onNewDocument: vi.fn(),
+    canSearch: true,
+    onSearch: vi.fn(),
+    onOpenCommandPalette: vi.fn(),
+    onOpenSettings: vi.fn(),
+    theme: 'light',
+    onToggleTheme: vi.fn(),
+    ...overrides,
+  };
+  return { ...render(<AppHeader {...props} />), props };
+}
+
+describe('AppHeader', () => {
+  it('按落点重排标签且不会切换活动文档', () => {
+    const onReorderDocument = vi.fn();
+    const onSelectDocument = vi.fn();
+    const { container } = renderHeader({ onReorderDocument, onSelectDocument });
+    const source = screen.getByRole('button', { name: 'One' });
+    const target = screen.getByRole('button', { name: 'Three' }).closest('.document-tab') as HTMLElement;
+    target.getBoundingClientRect = () => ({
+      x: 100, y: 0, left: 100, right: 200, top: 0, bottom: 48, width: 100, height: 48,
+      toJSON: () => ({}),
+    });
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      setData: vi.fn(),
+    };
+
+    fireEvent.dragStart(source, { dataTransfer });
+    const dragOver = createEvent.dragOver(target, { dataTransfer });
+    Object.defineProperty(dragOver, 'clientX', { value: 180 });
+    fireEvent(target, dragOver);
+    expect(target).toHaveClass('drop-after');
+    fireEvent.drop(container.querySelector('.tabs-scroll')!, { dataTransfer });
+
+    expect(onReorderDocument).toHaveBeenCalledOnce();
+    expect(onReorderDocument).toHaveBeenCalledWith('one', 2);
+    expect(onSelectDocument).not.toHaveBeenCalled();
+    expect(target).not.toHaveClass('drop-after');
+  });
+
+  it('关闭按钮不可拖动，取消拖动会清理插入反馈', () => {
+    const { container } = renderHeader();
+    const close = screen.getByRole('button', { name: '关闭 One' });
+    expect(close).toHaveAttribute('draggable', 'false');
+
+    const source = screen.getByRole('button', { name: 'One' });
+    const target = screen.getByRole('button', { name: 'Two' }).closest('.document-tab') as HTMLElement;
+    target.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, right: 100, top: 0, bottom: 48, width: 100, height: 48,
+      toJSON: () => ({}),
+    });
+    const dataTransfer = { effectAllowed: 'none', dropEffect: 'none', setData: vi.fn() };
+    fireEvent.dragStart(source, { dataTransfer });
+    const dragOver = createEvent.dragOver(target, { dataTransfer });
+    Object.defineProperty(dragOver, 'clientX', { value: 10 });
+    fireEvent(target, dragOver);
+    expect(target).toHaveClass('drop-before');
+    fireEvent.dragEnd(source, { dataTransfer });
+    expect(container.querySelector('.drop-before')).toBeNull();
+    expect(container.querySelector('.is-dragging')).toBeNull();
+  });
+
+  it('拖到标签栏边缘时自动滚动，并在拖动结束后取消动画帧', () => {
+    let frameCallback: FrameRequestCallback | undefined;
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        frameCallback = callback;
+        return 17;
+      });
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    const { container } = renderHeader();
+    const tabs = container.querySelector<HTMLElement>('.tabs-scroll')!;
+    const source = screen.getByRole('button', { name: 'One' });
+    const target = screen.getByRole('button', { name: 'Three' }).closest('.document-tab') as HTMLElement;
+    tabs.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, right: 300, top: 0, bottom: 48, width: 300, height: 48,
+      toJSON: () => ({}),
+    });
+    target.getBoundingClientRect = () => ({
+      x: 200, y: 0, left: 200, right: 300, top: 0, bottom: 48, width: 100, height: 48,
+      toJSON: () => ({}),
+    });
+    const dataTransfer = { effectAllowed: 'none', dropEffect: 'none', setData: vi.fn() };
+    fireEvent.dragStart(source, { dataTransfer });
+    const dragOver = createEvent.dragOver(target, { dataTransfer });
+    Object.defineProperty(dragOver, 'clientX', { value: 295 });
+    fireEvent(target, dragOver);
+    frameCallback?.(0);
+
+    expect(requestFrame).toHaveBeenCalled();
+    expect(tabs.scrollLeft).toBeGreaterThan(0);
+    fireEvent.dragEnd(source, { dataTransfer });
+    expect(cancelFrame).toHaveBeenCalledWith(17);
+  });
+
+  it('拖到标签栏末尾空白区域时插入到最后', () => {
+    const onReorderDocument = vi.fn();
+    const { container } = renderHeader({ onReorderDocument });
+    const tabs = container.querySelector<HTMLElement>('.tabs-scroll')!;
+    const source = screen.getByRole('button', { name: 'One' });
+    const dataTransfer = { effectAllowed: 'none', dropEffect: 'none', setData: vi.fn() };
+    fireEvent.dragStart(source, { dataTransfer });
+    const dragOver = createEvent.dragOver(tabs, { dataTransfer });
+    Object.defineProperty(dragOver, 'clientX', { value: 500 });
+    fireEvent(tabs, dragOver);
+    fireEvent.drop(tabs, { dataTransfer });
+    expect(onReorderDocument).toHaveBeenCalledWith('one', 2);
+  });
+
+  it('树操作布局不再使用自动左边距，内容和按钮均允许稳定收缩', () => {
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../styles.css'), 'utf8');
+    expect(css).toMatch(/\.tree-subtree-button\s*\{[^}]*margin-left:\s*8px/s);
+    expect(css).not.toMatch(/\.tree-subtree-button\s*\{[^}]*margin-left:\s*auto/s);
+    expect(css).toMatch(/\.tree-value\s*\{[^}]*min-width:\s*0/s);
+    expect(css).toMatch(/\.tree-virtual-content\s*\{[^}]*min-width:\s*100%/s);
+  });
+});
+
 describe('TreeView', () => {
   it('展开节点并复制 JSONPath', () => {
     const onCopy = vi.fn();
@@ -46,6 +184,32 @@ describe('TreeView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'user' }));
     expect(onCopy).toHaveBeenCalledWith('$.user', '路径');
     expect(screen.getByText('"Ada"')).toBeInTheDocument();
+  });
+
+  it('用一个按钮根据完整子树状态切换展开和收起', () => {
+    const source = '{"user":{"profile":{"name":"Ada"}}}';
+    const onExpandChange = vi.fn();
+    const props = {
+      root: parseJson(source),
+      parseError: null,
+      hasDuplicates: false,
+      expandState: createExpandState(),
+      onExpandChange,
+      highlightPaths: new Set<string>(),
+      onCopy: vi.fn(),
+    };
+    const { rerender } = render(<TreeView {...props} />);
+
+    expect(screen.getByRole('button', { name: '展开子树 user' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '收起子树 user' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '展开子树 user' }));
+    const expandedState = onExpandChange.mock.calls[0][0];
+    rerender(<TreeView {...props} expandState={expandedState} />);
+
+    expect(screen.getByRole('button', { name: '收起子树 user' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '展开子树 user' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '收起子树 user' }));
+    expect(onExpandChange).toHaveBeenCalledTimes(2);
   });
 
   it('为非法 JSON 显示可访问的空状态', () => {
@@ -114,11 +278,17 @@ describe('DiffView', () => {
 });
 
 describe('StructurePanel', () => {
-  it('长值保留完整 title 且不会挤压键区', () => {
+  it('长键和值保留完整 title，且键名列在宽面板中有上限', () => {
+    const key = 'a_very_long_schema_property_name_that_needs_truncation';
     const value = 'x'.repeat(240);
-    const { container } = render(<StructurePanel root={parseJson(JSON.stringify({ token: value }))} parseError={null} />);
-    expect(screen.getByText('token')).toBeInTheDocument();
+    const { container } = render(<StructurePanel root={parseJson(JSON.stringify({ [key]: value }))} parseError={null} />);
+    expect(screen.getByText(key)).toHaveAttribute('title', key);
     expect([...container.querySelectorAll<HTMLElement>('.structure-summary')].find((element) => element.title.includes(value))).toBeTruthy();
+
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../styles.css'), 'utf8');
+    expect(css).toMatch(/\.structure-row\s*\{[^}]*grid-template-columns:\s*22px minmax\(96px, clamp\(132px, 42%, 260px\)\) minmax\(0, 1fr\)/s);
+    expect(css).toMatch(/\.structure-key-label\s*\{[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/s);
+    expect(css).toMatch(/\.structure-summary\s*\{[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/s);
   });
 
   it('深层嵌套将缩进封顶，避免结构面板横向扩张', () => {
