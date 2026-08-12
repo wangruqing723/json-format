@@ -159,7 +159,7 @@ export function ActionBar({
       </div>
       <div className="toolbar-group panel-actions">
         <button
-          className={`tool-button toolbar-secondary${activePanel === 'search' ? ' is-active' : ''}`}
+          className={`tool-button toolbar-secondary tooltip-align-end${activePanel === 'search' ? ' is-active' : ''}`}
           type="button"
           onClick={() => onTogglePanel('search')}
           aria-pressed={activePanel === 'search'}
@@ -169,7 +169,7 @@ export function ActionBar({
           <Icon name="search" size={16} /><span>Search</span>
         </button>
         <button
-          className={`tool-button toolbar-secondary${tableDisabledReason ? ' is-disabled' : ''}`}
+          className={`tool-button toolbar-secondary tooltip-align-end table-view-button${tableDisabledReason ? ' is-disabled' : ''}`}
           type="button"
           onClick={() => { if (!tableDisabledReason) onOpenTable(); }}
           aria-disabled={Boolean(tableDisabledReason)}
@@ -179,7 +179,7 @@ export function ActionBar({
           <span>表格</span>
         </button>
         <button
-          className="tool-button toolbar-secondary"
+          className="tool-button toolbar-secondary tooltip-align-end split-orientation-button"
           type="button"
           onClick={onToggleSplitOrientation}
           aria-pressed={splitOrientation === 'row'}

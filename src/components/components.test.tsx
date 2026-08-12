@@ -5,11 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommandPalette } from './CommandPalette';
+import { ActionBar } from './ActionBar';
 import { AppHeader } from './AppHeader';
 import { ConfirmDialog } from './ConfirmDialog';
 import { buildDiffRows, DiffView } from './DiffView';
 import { SettingsDialog } from './SettingsDialog';
 import { ICON_CODEPOINTS } from './Icon';
+import { SearchPanel } from './SearchPanel';
 import { TreeView, type TreeViewHandle } from './TreeView';
 import { parseJson } from '../core/json-parser';
 import { createExpandState } from '../core/tree-flatten';
@@ -56,8 +58,6 @@ function renderHeader(overrides: Partial<React.ComponentProps<typeof AppHeader>>
     onCloseDocument: vi.fn(),
     onReorderDocument: vi.fn(),
     onNewDocument: vi.fn(),
-    canSearch: true,
-    onSearch: vi.fn(),
     onOpenCommandPalette: vi.fn(),
     onOpenSettings: vi.fn(),
     theme: 'light',
@@ -67,7 +67,54 @@ function renderHeader(overrides: Partial<React.ComponentProps<typeof AppHeader>>
   return { ...render(<AppHeader {...props} />), props };
 }
 
+describe('ActionBar', () => {
+  it('右侧提示向内对齐，表格禁用提示不继承按钮透明度', () => {
+    render(
+      <ActionBar
+        onOpen={vi.fn()}
+        onSave={vi.fn()}
+        onSaveAs={vi.fn()}
+        onCopyAll={vi.fn()}
+        onFormat={vi.fn()}
+        onMinify={vi.fn()}
+        onSort={vi.fn()}
+        onRepair={vi.fn()}
+        transformsDisabled={false}
+        disabledReason={null}
+        recentFiles={[]}
+        onOpenRecent={vi.fn()}
+        status={{ tone: 'success', text: 'JSON 有效' }}
+        moreActions={[]}
+        activePanel={null}
+        onTogglePanel={vi.fn()}
+        splitOrientation="row"
+        onToggleSplitOrientation={vi.fn()}
+        onOpenTable={vi.fn()}
+        tableDisabledReason="当前节点是标量，无法提取为表格"
+      />,
+    );
+
+    const tableButton = screen.getByRole('button', { name: '表格' });
+    expect(tableButton).toHaveClass('tooltip-align-end', 'table-view-button', 'is-disabled');
+    expect(tableButton).toHaveAttribute('data-tooltip', '当前节点是标量，无法提取为表格');
+    expect(screen.getByRole('button', { name: '上下分屏' })).toHaveClass('tooltip-align-end', 'split-orientation-button');
+
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../styles.css'), 'utf8');
+    expect(css).toMatch(/\[data-tooltip\]\.tooltip-align-end::after\s*\{[^}]*right:\s*0[^}]*left:\s*auto/s);
+    expect(css).toMatch(/\.panel-actions \.table-view-button\.is-disabled\s*\{[^}]*opacity:\s*1/s);
+    expect(css).toMatch(/\.actionbar\s*\{[^}]*container:\s*actionbar \/ inline-size/s);
+    expect(css).toMatch(/@container actionbar \(max-width: 1080px\)[\s\S]*?\.panel-actions > \.tool-button:first-child > span\s*\{ display: none; \}/s);
+    expect(css).toMatch(/\.panel-actions \.table-view-button > span,[\s\S]*?\.panel-actions \.split-orientation-button > span\s*\{ display: inline; \}/s);
+    expect(css).not.toMatch(/@media \(max-width: 1024px\)\s*\{\s*\.toolbar-secondary span\s*\{ display: none; \}/s);
+  });
+});
+
 describe('AppHeader', () => {
+  it('顶栏不再渲染重复的查找按钮', () => {
+    renderHeader();
+    expect(screen.queryByRole('button', { name: '查找' })).toBeNull();
+  });
+
   it('按落点重排标签且不会切换活动文档', () => {
     const onReorderDocument = vi.fn();
     const onSelectDocument = vi.fn();
@@ -166,11 +213,13 @@ describe('AppHeader', () => {
     expect(onReorderDocument).toHaveBeenCalledWith('one', 2);
   });
 
-  it('树操作布局不再使用自动左边距，内容和按钮均允许稳定收缩', () => {
+  it('树操作贴近内容，长值只收缩 value 而不挤压 key', () => {
     const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../styles.css'), 'utf8');
     expect(css).toMatch(/\.tree-subtree-button\s*\{[^}]*margin-left:\s*8px/s);
     expect(css).not.toMatch(/\.tree-subtree-button\s*\{[^}]*margin-left:\s*auto/s);
-    expect(css).toMatch(/\.tree-value\s*\{[^}]*min-width:\s*0/s);
+    expect(css).toMatch(/\.tree-path\s*\{[^}]*min-width:\s*max-content[^}]*flex:\s*0 0 auto/s);
+    expect(css).not.toMatch(/\.tree-path\s*\{[^}]*text-overflow:\s*ellipsis/s);
+    expect(css).toMatch(/\.tree-value\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1 1 0[^}]*text-overflow:\s*ellipsis/s);
     expect(css).toMatch(/\.tree-virtual-content\s*\{[^}]*min-width:\s*100%/s);
   });
 });
@@ -184,6 +233,77 @@ describe('TreeView', () => {
     fireEvent.click(screen.getByRole('button', { name: '"user"' }));
     expect(onSelectPath).toHaveBeenCalledWith('$.user');
     expect(screen.getByText('"Ada"')).toBeInTheDocument();
+  });
+
+  it('超长 value 保留完整 key，并把完整值放在 title 中', () => {
+    const value = 'token-'.repeat(120);
+    render(
+      <TreeView
+        root={parseJson(JSON.stringify({ refresh_token: value }))}
+        parseError={null}
+        hasDuplicates={false}
+        expandState={createExpandState()}
+        onExpandChange={vi.fn()}
+        highlightPaths={new Set()}
+        onCopy={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '"refresh_token"' })).toHaveTextContent('"refresh_token"');
+    expect(screen.getByTitle(value)).toHaveTextContent(JSON.stringify(value));
+  });
+
+  it('整行可选择，箭头和行内操作不会附带选择', () => {
+    const onSelectPath = vi.fn();
+    const onExpandChange = vi.fn();
+    const onCopy = vi.fn();
+    const onHide = vi.fn();
+    render(
+      <TreeView
+        root={parseJson('{"user":{"name":"Ada"}}')}
+        parseError={null}
+        hasDuplicates={false}
+        expandState={createExpandState()}
+        onExpandChange={onExpandChange}
+        highlightPaths={new Set()}
+        onCopy={onCopy}
+        onHide={onHide}
+        onSelectPath={onSelectPath}
+      />,
+    );
+
+    const userPath = screen.getByRole('button', { name: '"user"' });
+    const userRow = userPath.closest('[data-tree-row]')!;
+    fireEvent.click(userRow.querySelector('.tree-row')!);
+    expect(onSelectPath).toHaveBeenCalledWith('$.user');
+
+    onSelectPath.mockClear();
+    fireEvent.click(within(userRow).getByRole('button', { name: '折叠 user' }));
+    expect(onSelectPath).not.toHaveBeenCalled();
+    expect(onExpandChange).toHaveBeenCalled();
+
+    onSelectPath.mockClear();
+    fireEvent.click(within(userRow).getByRole('button', { name: '复制' }));
+    expect(onSelectPath).not.toHaveBeenCalled();
+    expect(onCopy).toHaveBeenCalledWith('{"name":"Ada"}', '值');
+  });
+
+  it('展开容器行不渲染逗号，闭合行仍按兄弟位置渲染', () => {
+    render(
+      <TreeView
+        root={parseJson('{"tags":{},"count":1}')}
+        parseError={null}
+        hasDuplicates={false}
+        expandState={createExpandState()}
+        onExpandChange={vi.fn()}
+        highlightPaths={new Set()}
+        onCopy={vi.fn()}
+      />,
+    );
+
+    const tagsRow = screen.getByRole('button', { name: '"tags"' }).closest('[data-tree-row]')!;
+    expect(tagsRow).toHaveTextContent('"tags"{');
+    expect(tagsRow).not.toHaveTextContent('"tags"{,');
   });
 
   it('用一个按钮根据完整子树状态切换展开和收起', () => {
@@ -305,6 +425,24 @@ describe('DiffView', () => {
     expect(screen.getByRole('region', { name: '右侧（窄屏下方）：修改.json' })).toBeInTheDocument();
     expect(container.querySelectorAll('.diff-line--changed')).toHaveLength(2);
     expect(screen.getAllByText('变化').length).toBeGreaterThan(0);
+  });
+});
+
+describe('SearchPanel', () => {
+  it('按 Escape 关闭搜索面板', () => {
+    const onClose = vi.fn();
+    render(
+      <SearchPanel
+        input=""
+        onChangeInput={vi.fn()}
+        result={null}
+        onSelectHit={vi.fn()}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.keyDown(screen.getByRole('complementary', { name: 'Search' }), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });
 

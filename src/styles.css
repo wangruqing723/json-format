@@ -206,7 +206,8 @@ button[aria-disabled='true'] {
   font-weight: 400;
   line-height: 1.35;
   opacity: 0;
-  white-space: nowrap;
+  white-space: normal;
+  width: max-content;
   transition: opacity 140ms ease, transform 140ms ease;
 }
 
@@ -214,6 +215,18 @@ button[aria-disabled='true'] {
 [data-tooltip]:focus-visible::after {
   transform: translateX(-50%) translateY(0);
   opacity: 1;
+}
+
+/* 工具栏末端的提示只向左展开，避免被窗口右边界裁切。 */
+[data-tooltip].tooltip-align-end::after {
+  right: 0;
+  left: auto;
+  transform: translateY(-2px);
+}
+
+[data-tooltip].tooltip-align-end:hover::after,
+[data-tooltip].tooltip-align-end:focus-visible::after {
+  transform: translateY(0);
 }
 
 .sr-only {
@@ -704,16 +717,14 @@ button[aria-disabled='true'] {
 }
 
 .tree-path {
-  min-width: 0;
-  flex: 0 1 auto;
+  min-width: max-content;
+  flex: 0 0 auto;
   padding: 2px 3px;
-  overflow: hidden;
   border: 0;
   border-radius: 3px;
   color: var(--accent);
   background: transparent;
   font-weight: 600;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -723,7 +734,7 @@ button[aria-disabled='true'] {
 
 .tree-value {
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 1 1 0;
   max-width: min(720px, 60vw);
   margin-left: 9px;
   overflow: hidden;
@@ -1229,8 +1240,10 @@ input[role='switch']:checked::after {
 }
 
 @media (max-width: 1024px) {
-  .toolbar-secondary span { display: none; }
-  .toolbar-secondary { width: 32px; padding: 0; }
+  .transform-actions .toolbar-secondary span,
+  .panel-actions > .toolbar-secondary:first-child span { display: none; }
+  .transform-actions .toolbar-secondary,
+  .panel-actions > .toolbar-secondary:first-child { width: 32px; padding: 0; }
   .statusbar { gap: 9px; }
 }
 
@@ -1530,6 +1543,7 @@ input[role='switch']:checked::after {
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+  container: actionbar / inline-size;
 }
 
 .status-pill {
@@ -1907,18 +1921,6 @@ select {
 .sidebar-docs-button { width: 100%; }
 
 .tree-view { display: flex; flex-direction: column; height: 100%; padding: 0; overflow: hidden; }
-.tree-toolbar {
-  display: flex;
-  align-items: center;
-  min-height: 36px;
-  gap: 6px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel-subtle);
-  font-family: var(--font-body);
-}
-.tree-toolbar-title { margin-right: auto; color: var(--text-muted); font-size: 11px; font-weight: 600; }
-.tree-toolbar-button { min-height: 26px; gap: 4px; padding: 0 8px; font-size: 11px; }
 .tree-virtual-scroll { position: relative; min-height: 0; flex: 1; overflow: auto; }
 .tree-virtual-content { position: relative; min-width: 100%; }
 .tree-flat-row { left: 0; }
@@ -1976,8 +1978,37 @@ select {
   font-size: 12px;
 }
 .workspace-float-panel .sidebar-search { overflow: auto; padding: 0 10px 12px; }
-.panel-actions { flex: 0 0 auto; }
+.panel-actions { min-width: max-content; flex: 0 0 auto; }
 .panel-actions .tool-button.is-active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+/* opacity 作用在按钮上时也会压低伪元素 tooltip 的对比度；这里只弱化禁用按钮本身的文字。 */
+.panel-actions .table-view-button.is-disabled { color: var(--text-faint); opacity: 1; }
+.panel-actions .table-view-button,
+.panel-actions .split-orientation-button { width: auto; min-width: 46px; padding: 0 8px; }
+.panel-actions .table-view-button > span,
+.panel-actions .split-orientation-button > span { display: inline; }
+
+/* 以操作栏实际宽度响应：主窗口扣除侧栏后的可用宽度远小于 viewport。 */
+@container actionbar (max-width: 1080px) {
+  .file-actions .tool-button > span,
+  .transform-actions .toolbar-secondary > span,
+  .panel-actions > .tool-button:first-child > span { display: none; }
+  .file-actions .tool-button,
+  .transform-actions .toolbar-secondary,
+  .panel-actions > .tool-button:first-child { width: 32px; padding: 0; }
+}
+
+@container actionbar (max-width: 720px) {
+  .status-pill { display: none; }
+}
+
+@container actionbar (max-width: 560px) {
+  .file-actions,
+  .actionbar > .toolbar-divider { display: none; }
+}
+
+@container actionbar (max-width: 410px) {
+  .transform-actions .tool-button:not(.tool-button--primary) { display: none; }
+}
 
 .split-workspace {
   width: 100%;
@@ -1998,7 +2029,6 @@ select {
 .split-workspace-pane-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   min-height: 32px;
   padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border);
@@ -2007,6 +2037,16 @@ select {
   font-family: var(--font-label);
   font-size: 10px;
   letter-spacing: .04em;
+  /* 容器上下文放在头部本身：按钮据「本栏宽度」收缩，且不影响下方树的滚动测量 */
+  container-type: inline-size;
+}
+.split-workspace-pane-header > span { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.split-workspace-pane-header-extra { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; margin-left: auto; margin-right: 6px; }
+.split-workspace-header-button { flex: 0 0 auto; min-height: 26px; gap: 4px; padding: 0 8px; font-size: 11px; }
+/* 树栏拖到很窄时，按钮退化为纯图标，避免文字被挤出可视区看不见 */
+@container (max-width: 340px) {
+  .split-workspace-header-button .split-workspace-header-label { display: none; }
+  .split-workspace-header-button { padding: 0 6px; }
 }
 .split-workspace-pane-content { min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
 .split-workspace-collapse-button { width: 24px; height: 24px; padding: 0; border: 0; color: var(--text-muted); background: transparent; }
@@ -2045,7 +2085,7 @@ select {
 .split-workspace-restore-button:hover { color: var(--accent); background: var(--accent-soft); }
 
 .tree-row {
-  position: relative;
+  position: static;
   display: flex;
   align-items: center;
   gap: 3px;
@@ -2058,11 +2098,14 @@ select {
 .tree-flat-row--close .tree-row { color: var(--text-muted); }
 .tree-close-token { margin-left: 25px; color: var(--text-muted); }
 .tree-flat-row.is-selected .tree-row { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
-.tree-row-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding-left: 8px; color: var(--text-muted); font-family: var(--font-body); font-size: 10px; opacity: 0; }
+.tree-row-actions { position: absolute; top: 0; right: 0; bottom: 0; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px 0 18px; color: var(--text-muted); background: linear-gradient(90deg, transparent, var(--panel-hover) 14px, var(--panel-hover)); font-family: var(--font-body); font-size: 10px; opacity: 0; pointer-events: none; }
 .tree-row:hover .tree-row-actions,
 .tree-flat-row:focus-within .tree-row-actions,
-.tree-flat-row:focus-visible .tree-row-actions { opacity: 1; }
+.tree-flat-row:focus-visible .tree-row-actions { opacity: 1; pointer-events: auto; }
 .tree-row-actions button { padding: 1px 0; border: 0; color: inherit; background: transparent; }
+.tree-row:hover .tree-row-actions button,
+.tree-flat-row:focus-within .tree-row-actions button,
+.tree-flat-row:focus-visible .tree-row-actions button { pointer-events: auto; }
 .tree-row-actions button:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
 .tree-row-actions button:disabled { color: var(--text-faint); cursor: not-allowed; }
 .tree-url-value { padding: 0; border: 0; background: transparent; text-decoration: underline; cursor: pointer; }

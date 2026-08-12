@@ -19,6 +19,8 @@ export interface SplitWorkspaceProps {
   onCollapsedPaneChange: (pane: CollapsedPane) => void;
   textPane: ReactNode;
   treePane: ReactNode;
+  textHeaderExtra?: ReactNode;
+  treeHeaderExtra?: ReactNode;
 }
 
 type PaneName = 'text' | 'tree';
@@ -41,6 +43,8 @@ export function SplitWorkspace({
   onCollapsedPaneChange,
   textPane,
   treePane,
+  textHeaderExtra,
+  treeHeaderExtra,
 }: SplitWorkspaceProps) {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(() =>
@@ -133,13 +137,21 @@ export function SplitWorkspace({
       data-pane={pane}
       aria-label={paneTitle(pane)}
       style={collapsed ? undefined : {
-        flex: effectiveCollapsedPane === 'none' ? `0 0 ${localRatio * 100}%` : '1 1 auto',
+        // 只有第一栏(文本)按比例取固定基准；第二栏(树)用 flex-grow 吃掉剩余空间。
+        // 若两栏都用 localRatio 作基准，比例≠0.5 时两栏之和不足 100%，
+        // 末尾会留出一块同色空白，看起来像树被遮罩盖住 / 缺了一块。
+        flex: effectiveCollapsedPane === 'none'
+          ? (pane === 'text' ? `0 0 ${localRatio * 100}%` : '1 1 0')
+          : '1 1 auto',
         minWidth: 0,
         minHeight: 0,
       }}
     >
       <header className="split-workspace-pane-header">
         <span>{paneTitle(pane)}</span>
+        <div className="split-workspace-pane-header-extra">
+          {pane === 'text' ? textHeaderExtra : treeHeaderExtra}
+        </div>
         <button
           className="split-workspace-collapse-button"
           type="button"

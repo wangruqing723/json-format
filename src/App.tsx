@@ -912,6 +912,11 @@ export function App() {
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (!nativeSessionReady) return;
+      if (event.key === 'Escape' && activePanel === 'search') {
+        event.preventDefault();
+        setActivePanel(null);
+        return;
+      }
       const mod = event.metaKey || event.ctrlKey;
       if (mod && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -923,6 +928,7 @@ export function App() {
         event.preventDefault();
         collapseAllRows();
       } else if (mod && event.key.toLowerCase() === 'f' && !diff && !historyOpen) {
+        if (event.target instanceof Element && event.target.closest('.cm-editor')) return;
         event.preventDefault();
         if (activeDocument?.collapsedPane !== 'tree') focusSearch();
         else editorRef.current?.openSearch();
@@ -948,7 +954,7 @@ export function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [activeDocument?.collapsedPane, collapseAllRows, diff, expandAllRows, focusSearch, handleFormat, handleOpen, handleSave, handleSaveAs, historyOpen, nativeSessionReady, newDocument, openCommandPanel, requestClose]);
+  }, [activeDocument?.collapsedPane, activePanel, collapseAllRows, diff, expandAllRows, focusSearch, handleFormat, handleOpen, handleSave, handleSaveAs, historyOpen, nativeSessionReady, newDocument, openCommandPanel, requestClose]);
 
   if (!nativeSessionReady) {
     return (
@@ -962,7 +968,6 @@ export function App() {
   const activeDiagnostic = diagnostics[activeDocument.id];
   const activeMeta = metadata[activeDocument.id];
   const activeBytes = byteLength(activeDocument.content);
-  const canSearch = !diff && !historyOpen;
   const transformsDisabled = Boolean(processing) || Boolean(diff) || historyOpen;
   const activeView: WorkspaceView = historyOpen ? 'history' : diff ? 'diff' : 'edit';
   const tableNode = selectedPath && parseResult.root
@@ -1015,8 +1020,6 @@ export function App() {
         onCloseDocument={requestClose}
         onReorderDocument={reorderDocument}
         onNewDocument={() => newDocument()}
-        canSearch={canSearch}
-        onSearch={() => canSearch && (activeDocument.collapsedPane === 'text' ? editorRef.current?.openSearch() : focusSearch())}
         onOpenCommandPalette={openCommandPanel}
         onOpenSettings={openSettingsPanel}
         theme={resolvedTheme}
@@ -1079,6 +1082,41 @@ export function App() {
             onRatioCommit={(ratio) => updateSettings({ splitRatio: ratio })}
             collapsedPane={activeDocument.collapsedPane}
             onCollapsedPaneChange={(pane) => setCollapsedPane(activeDocument.id, pane)}
+            treeHeaderExtra={(
+              <>
+                <button
+                  type="button"
+                  className="secondary-button split-workspace-header-button"
+                  onClick={() => void expandAllRows()}
+                  disabled={!parseResult.root}
+                  aria-label="全部展开"
+                  title="全部展开"
+                >
+                  <Icon name="expand_more" size={14} /><span className="split-workspace-header-label">全部展开</span>
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button split-workspace-header-button"
+                  onClick={collapseAllRows}
+                  disabled={!parseResult.root}
+                  aria-label="全部收起"
+                  title="全部收起"
+                >
+                  <Icon name="chevron_right" size={14} /><span className="split-workspace-header-label">全部收起</span>
+                </button>
+                {hiddenPaths.size > 0 && (
+                  <button
+                    type="button"
+                    className="secondary-button split-workspace-header-button"
+                    onClick={() => setHiddenPaths(new Set())}
+                    aria-label={`恢复隐藏 (${hiddenPaths.size})`}
+                    title={`恢复隐藏 (${hiddenPaths.size})`}
+                  >
+                    <Icon name="settings_backup_restore" size={14} /><span className="split-workspace-header-label">恢复隐藏 ({hiddenPaths.size})</span>
+                  </button>
+                )}
+              </>
+            )}
             textPane={(
               <JsonEditor
                 key={activeDocument.id}

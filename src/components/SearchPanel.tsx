@@ -11,7 +11,16 @@ export interface SearchPanelProps {
 
 export function SearchPanel({ input, onChangeInput, result, onSelectHit, onClose }: SearchPanelProps) {
   return (
-    <aside className="workspace-float-panel search-panel" aria-label="Search">
+    <aside
+      className="workspace-float-panel search-panel"
+      aria-label="Search"
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }}
+    >
       <header className="workspace-float-panel-header">
         <strong>Search</strong>
         <button className="icon-button" type="button" onClick={onClose} aria-label="关闭 Search" data-tooltip="关闭 Search">

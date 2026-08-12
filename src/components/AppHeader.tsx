@@ -13,8 +13,6 @@ export interface AppHeaderProps {
   onCloseDocument: (id: string) => void;
   onReorderDocument: (id: DocumentId, targetIndex: number) => void;
   onNewDocument: () => void;
-  canSearch: boolean;
-  onSearch: () => void;
   onOpenCommandPalette: () => void;
   onOpenSettings: () => void;
   theme: 'light' | 'dark';
@@ -30,8 +28,6 @@ export function AppHeader({
   onCloseDocument,
   onReorderDocument,
   onNewDocument,
-  canSearch,
-  onSearch,
   onOpenCommandPalette,
   onOpenSettings,
   theme,
@@ -196,9 +192,6 @@ export function AppHeader({
           </button>
         </div>
         <div className="title-actions">
-          <button className={`icon-button${canSearch ? '' : ' is-disabled'}`} type="button" aria-disabled={!canSearch} onClick={onSearch} data-tooltip={canSearch ? '查找 (Ctrl/⌘ F)' : '当前视图不可查找'} aria-label="查找">
-            <Icon name="search" size={17} />
-          </button>
           <button className="icon-button" type="button" onClick={onOpenCommandPalette} data-tooltip="命令面板 (Ctrl/⌘ K)" aria-label="打开命令面板">
             <Icon name="bottom_panel_open" size={17} />
           </button>

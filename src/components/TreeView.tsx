@@ -3,10 +3,7 @@ import type { JsonNode } from '../core/json-parser';
 import { externalUrlFromNode } from '../core/json-url';
 import { minifyJsonNode } from '../core/json-transform';
 import {
-  collapseAll,
   collapseSubtree,
-  countVisibleRows,
-  expandAll,
   expandSubtree,
   flattenTree,
   isExpanded,
@@ -16,7 +13,6 @@ import {
   type FlatRow,
 } from '../core/tree-flatten';
 import { openExternalUrl } from '../services/platform';
-import { useConfirm } from './ConfirmDialog';
 import { Icon } from './Icon';
 
 export const EXPAND_ALL_CONFIRM_ROWS = 50_000;
@@ -82,9 +78,15 @@ function useVirtualWindow(rows: FlatRow[]): VirtualWindow {
     update();
     element.addEventListener('scroll', update, { passive: true });
     window.addEventListener('resize', update);
+    // 树现在活在可拖拽的分栏里：拖分隔条改变本栏高度时不会触发 window.resize，
+    // 只靠 window.resize 会让虚拟窗口沿用旧高度，只渲染旧高度内的行，
+    // 下方留出一片没有行的空白（看起来像被遮罩盖住）。用 ResizeObserver 直接盯滚动容器本身。
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
+    observer?.observe(element);
     return () => {
       element.removeEventListener('scroll', update);
       window.removeEventListener('resize', update);
+      observer?.disconnect();
     };
   }, [rows.length]);
 
@@ -224,7 +226,7 @@ const TreeRow = memo(function TreeRow({
   const token = container
     ? expanded ? (row.node.type === 'array' ? '[' : '{') : `${row.node.type === 'array' ? '[' : '{'}…${containerCount(row.node)}${row.node.type === 'array' ? ']' : '}'}`
     : valueText(row.node);
-  const comma = row.isLast ? '' : ',';
+  const comma = row.kind === 'open' || row.isLast ? '' : ',';
 
   return (
     <div
@@ -234,6 +236,7 @@ const TreeRow = memo(function TreeRow({
       data-row-index={index}
       role="listitem"
       tabIndex={0}
+      onClick={() => onSelectPath(row.path)}
       onKeyDown={handleKeyDown}
     >
       <div className="tree-row" style={{ '--tree-depth': row.depth } as React.CSSProperties}>
@@ -242,7 +245,10 @@ const TreeRow = memo(function TreeRow({
           <button
             className="tree-toggle icon-button"
             type="button"
-            onClick={handleToggle}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleToggle();
+            }}
             aria-expanded={expanded}
             aria-label={expanded ? `折叠 ${row.label}` : `展开 ${row.label}`}
           >
@@ -253,7 +259,6 @@ const TreeRow = memo(function TreeRow({
           className="tree-path"
           type="button"
           data-tooltip={row.ambiguous ? '重复键路径不唯一' : `选择 ${row.path}`}
-          onClick={() => onSelectPath(row.path)}
         >
           {label}
         </button>
@@ -262,7 +267,8 @@ const TreeRow = memo(function TreeRow({
             type="button"
             className={`tree-value tree-value--${row.node.type} tree-url-value`}
             title={fullValue}
-            onClick={() => {
+            onClick={(event) => {
+              event.stopPropagation();
               const url = externalUrlFromNode(row.node);
               if (!url) return;
               if (onOpenExternal) onOpenExternal(url);
@@ -290,21 +296,24 @@ const TreeRow = memo(function TreeRow({
             type="button"
             aria-label={`${subtreeExpanded ? '收起' : '展开'}子树 ${row.label}`}
             data-tooltip={subtreeExpanded ? '收起子树 (Shift ←)' : '展开子树 (Shift →)'}
-            onClick={() => onExpandChange(subtreeExpanded
-              ? collapseSubtree(expandState, row.path)
-              : expandSubtree(expandState, row.path))}
+            onClick={(event) => {
+              event.stopPropagation();
+              onExpandChange(subtreeExpanded
+                ? collapseSubtree(expandState, row.path)
+                : expandSubtree(expandState, row.path));
+            }}
           >
             <Icon name={subtreeExpanded ? 'chevron_right' : 'expand_more'} size={13} />
           </button>
         )}
         <span className="tree-row-actions" aria-label="节点操作">
-          <button type="button" onClick={() => onCopy(fullValue, '值')}>复制</button>
+          <button type="button" onClick={(event) => { event.stopPropagation(); onCopy(fullValue, '值'); }}>复制</button>
           <span aria-hidden="true">|</span>
-          <button type="button" disabled={row.ambiguous} onClick={() => onCopy(row.path, '路径')}>复制路径</button>
+          <button type="button" disabled={row.ambiguous} onClick={(event) => { event.stopPropagation(); onCopy(row.path, '路径'); }}>复制路径</button>
           <span aria-hidden="true">|</span>
-          <button type="button" onClick={() => onDownloadNode(row.path, row.node)}>下载</button>
+          <button type="button" onClick={(event) => { event.stopPropagation(); onDownloadNode(row.path, row.node); }}>下载</button>
           <span aria-hidden="true">|</span>
-          <button type="button" onClick={() => onHide(row.path)}>删除</button>
+          <button type="button" onClick={(event) => { event.stopPropagation(); onHide(row.path); }}>删除</button>
         </span>
       </div>
     </div>
@@ -328,7 +337,6 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
   allowRemoteImages = false,
   onOpenExternal,
 }: TreeViewProps, ref) {
-  const { confirm, dialog: confirmDialog } = useConfirm();
   const rows = useMemo(() => root ? flattenTree(root, expandState, hiddenPaths) : [], [expandState, hiddenPaths, root]);
   const virtual = useVirtualWindow(rows);
 
@@ -339,21 +347,6 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
       if (index >= 0) virtual.scrollToIndex(index);
     },
   }), [rows, virtual.scrollToIndex]);
-
-  const requestExpandAll = async () => {
-    if (!root) return;
-    const next = expandAll(expandState);
-    const count = countVisibleRows(root, next, hiddenPaths);
-    if (count > EXPAND_ALL_CONFIRM_ROWS) {
-      const confirmed = await confirm({
-        title: '展开全部节点',
-        message: `全部展开后预计有 ${count.toLocaleString()} 行，可能占用较多内存。仍要继续吗？`,
-        confirmLabel: '展开全部',
-      });
-      if (!confirmed) return;
-    }
-    onExpandChange(next);
-  };
 
   if (parseError || !root) {
     return (
@@ -367,20 +360,6 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
 
   return (
     <div className="tree-view" aria-label="JSON 树">
-      <div className="tree-toolbar" role="toolbar" aria-label="树视图操作">
-        <span className="tree-toolbar-title">树视图</span>
-        <button type="button" className="secondary-button tree-toolbar-button" onClick={() => void requestExpandAll()}>
-          <Icon name="expand_more" size={14} />全部展开
-        </button>
-        <button type="button" className="secondary-button tree-toolbar-button" onClick={() => onExpandChange(collapseAll(expandState))}>
-          <Icon name="chevron_right" size={14} />全部收起
-        </button>
-        {hiddenPaths.size > 0 && (
-          <button type="button" className="secondary-button tree-toolbar-button" onClick={onRestoreHidden}>
-            恢复隐藏 ({hiddenPaths.size})
-          </button>
-        )}
-      </div>
       {hasDuplicates && (
         <div className="tree-warning" role="status">
           <Icon name="warning" size={14} />
@@ -409,7 +388,6 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
           ))}
         </div>
       </div>
-      {confirmDialog}
     </div>
   );
 });

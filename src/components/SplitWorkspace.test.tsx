@@ -150,4 +150,14 @@ describe('SplitWorkspace pane 布局', () => {
     expect(container.querySelector('[data-pane="text"]')).toBeTruthy();
     expect(container.querySelector('[data-pane="tree"]')).toBeTruthy();
   });
+
+  it('在 pane 标题中渲染可选的额外操作', () => {
+    const { container } = renderWorkspace({
+      textHeaderExtra: <button type="button">文本操作</button>,
+      treeHeaderExtra: <button type="button">树操作</button>,
+    });
+
+    expect(container.querySelector('[data-pane="text"] .split-workspace-pane-header-extra')).toHaveTextContent('文本操作');
+    expect(container.querySelector('[data-pane="tree"] .split-workspace-pane-header-extra')).toHaveTextContent('树操作');
+  });
 });
