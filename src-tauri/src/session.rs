@@ -450,8 +450,10 @@ fn build_load_result(
             &entry.id,
             &entry.snapshot_id,
         )?;
-        snapshot_ids.insert(entry.id.clone(), entry.snapshot_id);
+        // 先按 &entry 归一化 collapsed_pane，再 move 出 snapshot_id：
+        // 反过来会先把 entry.snapshot_id 部分 move 掉，导致对 &entry 的借用报 E0382。
         let collapsed_pane = normalize_collapsed_pane(&entry);
+        snapshot_ids.insert(entry.id.clone(), entry.snapshot_id);
         documents.push(JsonDocument {
             id: entry.id,
             title: entry.title,
