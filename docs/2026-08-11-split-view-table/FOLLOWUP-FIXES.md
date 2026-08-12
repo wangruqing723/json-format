@@ -2,6 +2,8 @@
 
 > 承接 f1b8177。用户实测反馈 6 处问题，决策已定，逐条给精确落点。
 > 硬约束沿用 DESIGN.md §12：不动 ICON_CODEPOINTS、保 theme-parity 取色类名、保虚拟化与 50k 闸门。
+>
+> 状态：**F1-F6 全部完成**，随 `v0.3.0` 的 `d0657a8` 发布并归档。
 
 ## F1 展开容器行多渲染了逗号（bug）
 
@@ -66,6 +68,6 @@
 - 验收：搜索面板打开时按 Esc 即关闭，无论焦点在输入框还是别处；不影响其它 Esc 行为。
 
 ## 通用验收
-- `npm run build` 与 `npm test` 全绿，无跳过；受影响测试同步更新，不放宽原有断言。
-- `ICON_CODEPOINTS` 零改动（不新增/不删除），`icon-subset` 与 `theme-parity` 仍绿。
-- 不自动 git commit，改动留工作区待评审。发现新设计问题写入本目录 `KNOWN_ISSUES.md`。
+- [x] `npm run build` 与 `npm test` 全绿，无跳过；受影响测试同步更新，未放宽原有断言。
+- [x] `ICON_CODEPOINTS` 零改动（不新增/不删除），`icon-subset` 与 `theme-parity` 全绿。
+- [x] 用户后续反馈的工具栏提示越界和树长值挤压 key 已在 `d0657a8` 一并修复。
