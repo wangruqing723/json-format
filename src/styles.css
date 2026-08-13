@@ -1240,8 +1240,8 @@ input[role='switch']:checked::after {
 }
 
 @media (max-width: 1024px) {
-  .transform-actions .toolbar-secondary span,
-  .panel-actions > .toolbar-secondary:first-child span { display: none; }
+  .transform-actions .toolbar-secondary span:not(.material-symbols-outlined),
+  .panel-actions > .toolbar-secondary:first-child span:not(.material-symbols-outlined) { display: none; }
   .transform-actions .toolbar-secondary,
   .panel-actions > .toolbar-secondary:first-child { width: 32px; padding: 0; }
   .statusbar { gap: 9px; }
@@ -1255,7 +1255,7 @@ input[role='switch']:checked::after {
   .brand strong { font-size: 12px; }
   .toolbar { gap: 3px; padding: 5px; }
   .toolbar-group { gap: 1px; }
-  .tool-button span { display: none; }
+  .tool-button span:not(.material-symbols-outlined) { display: none; }
   .tool-button { width: 31px; padding: 0; }
   .tool-button--compact { width: 31px; }
   .toolbar-divider { margin: 0 1px; }
@@ -1989,9 +1989,11 @@ select {
 
 /* 以操作栏实际宽度响应：主窗口扣除侧栏后的可用宽度远小于 viewport。 */
 @container actionbar (max-width: 1080px) {
-  .file-actions .tool-button > span,
-  .transform-actions .toolbar-secondary > span,
-  .panel-actions > .tool-button:first-child > span { display: none; }
+  /* 只收起文字标签，保留图标（<Icon> 渲染成 span.material-symbols-outlined，
+     若用裸 `> span` 会连图标一起隐藏，按钮变成可点但全空白）。 */
+  .file-actions .tool-button > span:not(.material-symbols-outlined),
+  .transform-actions .toolbar-secondary > span:not(.material-symbols-outlined),
+  .panel-actions > .tool-button:first-child > span:not(.material-symbols-outlined) { display: none; }
   .file-actions .tool-button,
   .transform-actions .toolbar-secondary,
   .panel-actions > .tool-button:first-child { width: 32px; padding: 0; }

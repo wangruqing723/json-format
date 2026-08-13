@@ -103,7 +103,9 @@ describe('ActionBar', () => {
     expect(css).toMatch(/\[data-tooltip\]\.tooltip-align-end::after\s*\{[^}]*right:\s*0[^}]*left:\s*auto/s);
     expect(css).toMatch(/\.panel-actions \.table-view-button\.is-disabled\s*\{[^}]*opacity:\s*1/s);
     expect(css).toMatch(/\.actionbar\s*\{[^}]*container:\s*actionbar \/ inline-size/s);
-    expect(css).toMatch(/@container actionbar \(max-width: 1080px\)[\s\S]*?\.panel-actions > \.tool-button:first-child > span\s*\{ display: none; \}/s);
+    expect(css).toMatch(/@container actionbar \(max-width: 1080px\)[\s\S]*?\.panel-actions > \.tool-button:first-child > span:not\(\.material-symbols-outlined\)\s*\{ display: none; \}/s);
+    // 收起时只藏文字标签、保留图标：裸 `> span` 会连图标 span 一起隐藏，按钮变全空白。
+    expect(css).not.toMatch(/@container actionbar \(max-width: 1080px\)[\s\S]*?\.file-actions \.tool-button > span\s*\{ display: none; \}/s);
     expect(css).toMatch(/\.panel-actions \.table-view-button > span,[\s\S]*?\.panel-actions \.split-orientation-button > span\s*\{ display: inline; \}/s);
     expect(css).not.toMatch(/@media \(max-width: 1024px\)\s*\{\s*\.toolbar-secondary span\s*\{ display: none; \}/s);
   });

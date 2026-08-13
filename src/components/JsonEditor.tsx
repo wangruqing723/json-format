@@ -7,9 +7,10 @@ import {
 import { json } from '@codemirror/lang-json';
 import { bracketMatching, foldGutter, HighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language';
 import { Diagnostic, lintGutter, setDiagnostics } from '@codemirror/lint';
-import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
+import { openSearchPanel, search, SearchCursor, searchKeymap } from '@codemirror/search';
 import { Compartment, EditorState, Transaction } from '@codemirror/state';
 import {
+  Decoration,
   drawSelection,
   dropCursor,
   EditorView,
@@ -19,7 +20,9 @@ import {
   keymap,
   lineNumbers,
   rectangularSelection,
+  ViewPlugin,
 } from '@codemirror/view';
+import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 
@@ -56,8 +59,17 @@ const lightTheme = EditorView.theme({
   '.cm-content': { caretColor: '#b80048' },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#b80048' },
   '.cm-gutters': { backgroundColor: '#ffffff', color: '#5c3f43', border: 'none' },
-  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#fdf0f4' },
-  '.cm-selectionBackground, ::selection': { backgroundColor: '#ffe9ef !important' },
+  // 当前行底 #ffd0e0（vs 白 1.37）+ 4px 实心竖条标示光标行。选区关键在于「叠在当前行底上仍要看得出」——
+  // 之前 #ffc2d6 与当前行仅差 1.1，选中当前行内文字等于没高亮，故加深到 #ff8bb8（vs 当前行 1.59、vs 白 2.18）。
+  // 键名此时 3.08:1：选中是临时态且键名加粗，符合大文本 AA 3:1。
+  '.cm-activeLine': { backgroundColor: '#ffd0e0', boxShadow: 'inset 4px 0 0 #b80048' },
+  '.cm-activeLineGutter': { backgroundColor: '#ffd0e0', color: '#b80048' },
+  // 选中/停留的词与其它相同词都套青框（.cm-occurrence，含当前这处），构成「同一组相同词」；
+  // 选中的那处还叠一层选区底色（#ff8bb8）以突出。青框底用半透明，好让选区色透出来。
+  '.cm-selectionBackground': { backgroundColor: '#ff8bb8 !important' },
+  '&.cm-focused .cm-selectionBackground': { backgroundColor: '#ff8bb8 !important' },
+  '::selection': { backgroundColor: '#ff8bb8' },
+  '.cm-occurrence': { backgroundColor: 'rgba(0, 145, 138, .16)', outline: '1px solid #00918a', borderRadius: '2px' },
   '.cm-matchingBracket': { backgroundColor: '#d9f3e2', outline: '1px solid #006970' },
 });
 
@@ -67,15 +79,67 @@ const darkTheme = EditorView.theme(
     '.cm-content': { caretColor: '#00ffcc' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#00ffcc' },
     '.cm-gutters': { backgroundColor: '#0f0f1a', color: '#a098b0', border: 'none' },
-    '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#141422' },
-    // 选区底比原先压暗：键名用的 #ff2d78 亮度偏低，在 #3a2b4a 上只有 3.63:1。
-    // #251c2f 下键名达 4.59:1，且与编辑器底仍有 1.21 反差，选中状态看得出来。
-    // 键名是出现频率最高的 token，故以它作为选区底色的对比度基准。
-    '.cm-selectionBackground, ::selection': { backgroundColor: '#251c2f !important' },
+    // 当前行底 #1c1c33 + 4px 实心青竖条 + 行号染青标示光标行（竖条不碰文字对比，键名仍 4.67:1）。
+    // 选区关键在于「叠在当前行底上仍要看得出」——之前 #2a2140 与当前行仅差 1.1，选中当前行内文字等于没高亮，
+    // 故提亮到 #4a2f66（vs 当前行 1.5、vs 底 1.77）。键名此时 3.12:1：选中是临时态且键名加粗，符合大文本 AA 3:1。
+    '.cm-activeLine': { backgroundColor: '#1c1c33', boxShadow: 'inset 4px 0 0 #00ffcc' },
+    '.cm-activeLineGutter': { backgroundColor: '#1c1c33', color: '#00ffcc' },
+    '.cm-selectionBackground': { backgroundColor: '#4a2f66 !important' },
+    '&.cm-focused .cm-selectionBackground': { backgroundColor: '#4a2f66 !important' },
+    '::selection': { backgroundColor: '#4a2f66' },
+    '.cm-occurrence': { backgroundColor: 'rgba(0, 255, 204, .16)', outline: '1px solid rgba(0, 255, 204, .55)', borderRadius: '2px' },
     '.cm-matchingBracket': { backgroundColor: '#1a4d47', outline: '1px solid #00ffcc' },
     '.cm-tooltip': { backgroundColor: '#1e1e30', borderColor: '#493b60' },
   },
   { dark: true },
+);
+
+const occurrenceMark = Decoration.mark({ class: 'cm-occurrence' });
+
+// 把「光标所在的词 / 已选中的文本」连同全文所有相同出现——包括当前这一处——统一高亮。
+// CodeMirror 自带的 highlightSelectionMatches 偏偏不高亮你正选中/停留的那一处，
+// 而用户要的恰恰是当前这处也高亮，且把光标放进单词任意位置就触发，故自实现。
+function buildOccurrences(view: EditorView): DecorationSet {
+  const { state } = view;
+  const sel = state.selection.main;
+  let from: number;
+  let to: number;
+  if (sel.empty) {
+    const word = state.wordAt(sel.head);
+    if (!word) return Decoration.none;
+    from = word.from;
+    to = word.to;
+  } else {
+    from = sel.from;
+    to = sel.to;
+  }
+  const query = state.sliceDoc(from, to);
+  // 太短或含空白/换行的选区不参与，避免整屏乱糊。
+  if (query.length < 2 || /\s/.test(query)) return Decoration.none;
+  const ranges: ReturnType<typeof occurrenceMark.range>[] = [];
+  for (const part of view.visibleRanges) {
+    const cursor = new SearchCursor(state.doc, query, part.from, part.to);
+    while (!cursor.next().done) {
+      ranges.push(occurrenceMark.range(cursor.value.from, cursor.value.to));
+      if (ranges.length > 200) return Decoration.set(ranges, true);
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+const occurrenceHighlighter = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      this.decorations = buildOccurrences(view);
+    }
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        this.decorations = buildOccurrences(update.view);
+      }
+    }
+  },
+  { decorations: (value) => value.decorations },
 );
 
 // 亮色同样与树视图对齐：键名取亮色 --accent，标点取亮色 --text-muted。
@@ -162,6 +226,8 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
         lintGutter(),
         json(),
         search({ top: true }),
+        // 选中/停在一个词上时，全文相同片段（含当前这处）统一高亮——用户要的「高亮相同项」。
+        occurrenceHighlighter,
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
         themeCompartment.of(editorTheme(theme)),
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),

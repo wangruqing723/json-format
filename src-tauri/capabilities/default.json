@@ -5,12 +5,14 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-destroy",
     "dialog:allow-open",
     "dialog:allow-save",
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
     "clipboard-manager:allow-write-text",
     "opener:allow-reveal-item-in-dir",
-    "opener:allow-open-url"
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
   ]
 }
