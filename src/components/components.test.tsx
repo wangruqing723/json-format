@@ -1,10 +1,11 @@
-import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createRef } from 'react';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommandPalette } from './CommandPalette';
+import { AboutDialog } from './AboutDialog';
 import { ActionBar } from './ActionBar';
 import { AppHeader } from './AppHeader';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -67,6 +68,10 @@ function renderHeader(overrides: Partial<React.ComponentProps<typeof AppHeader>>
   return { ...render(<AppHeader {...props} />), props };
 }
 
+function firePointer(target: Element | Window, type: string, clientX = 0) {
+  fireEvent(target, new MouseEvent(type, { clientX, button: 0, bubbles: true }));
+}
+
 describe('ActionBar', () => {
   it('右侧提示向内对齐，表格禁用提示不继承按钮透明度', () => {
     render(
@@ -120,25 +125,17 @@ describe('AppHeader', () => {
   it('按落点重排标签且不会切换活动文档', () => {
     const onReorderDocument = vi.fn();
     const onSelectDocument = vi.fn();
-    const { container } = renderHeader({ onReorderDocument, onSelectDocument });
+    renderHeader({ onReorderDocument, onSelectDocument });
     const source = screen.getByRole('button', { name: 'One' });
     const target = screen.getByRole('button', { name: 'Three' }).closest('.document-tab') as HTMLElement;
     target.getBoundingClientRect = () => ({
       x: 100, y: 0, left: 100, right: 200, top: 0, bottom: 48, width: 100, height: 48,
       toJSON: () => ({}),
     });
-    const dataTransfer = {
-      effectAllowed: 'none',
-      dropEffect: 'none',
-      setData: vi.fn(),
-    };
-
-    fireEvent.dragStart(source, { dataTransfer });
-    const dragOver = createEvent.dragOver(target, { dataTransfer });
-    Object.defineProperty(dragOver, 'clientX', { value: 180 });
-    fireEvent(target, dragOver);
+    firePointer(source, 'pointerdown', 10);
+    firePointer(window, 'pointermove', 180);
     expect(target).toHaveClass('drop-after');
-    fireEvent.drop(container.querySelector('.tabs-scroll')!, { dataTransfer });
+    firePointer(window, 'pointerup', 180);
 
     expect(onReorderDocument).toHaveBeenCalledOnce();
     expect(onReorderDocument).toHaveBeenCalledWith('one', 2);
@@ -146,24 +143,18 @@ describe('AppHeader', () => {
     expect(target).not.toHaveClass('drop-after');
   });
 
-  it('关闭按钮不可拖动，取消拖动会清理插入反馈', () => {
+  it('取消拖动会清理插入反馈', () => {
     const { container } = renderHeader();
-    const close = screen.getByRole('button', { name: '关闭 One' });
-    expect(close).toHaveAttribute('draggable', 'false');
-
     const source = screen.getByRole('button', { name: 'One' });
     const target = screen.getByRole('button', { name: 'Two' }).closest('.document-tab') as HTMLElement;
     target.getBoundingClientRect = () => ({
       x: 0, y: 0, left: 0, right: 100, top: 0, bottom: 48, width: 100, height: 48,
       toJSON: () => ({}),
     });
-    const dataTransfer = { effectAllowed: 'none', dropEffect: 'none', setData: vi.fn() };
-    fireEvent.dragStart(source, { dataTransfer });
-    const dragOver = createEvent.dragOver(target, { dataTransfer });
-    Object.defineProperty(dragOver, 'clientX', { value: 10 });
-    fireEvent(target, dragOver);
+    firePointer(source, 'pointerdown', 50);
+    firePointer(window, 'pointermove', 10);
     expect(target).toHaveClass('drop-before');
-    fireEvent.dragEnd(source, { dataTransfer });
+    firePointer(window, 'pointercancel', 10);
     expect(container.querySelector('.drop-before')).toBeNull();
     expect(container.querySelector('.is-dragging')).toBeNull();
   });
@@ -188,31 +179,78 @@ describe('AppHeader', () => {
       x: 200, y: 0, left: 200, right: 300, top: 0, bottom: 48, width: 100, height: 48,
       toJSON: () => ({}),
     });
-    const dataTransfer = { effectAllowed: 'none', dropEffect: 'none', setData: vi.fn() };
-    fireEvent.dragStart(source, { dataTransfer });
-    const dragOver = createEvent.dragOver(target, { dataTransfer });
-    Object.defineProperty(dragOver, 'clientX', { value: 295 });
-    fireEvent(target, dragOver);
+    firePointer(source, 'pointerdown', 10);
+    firePointer(window, 'pointermove', 295);
     frameCallback?.(0);
 
     expect(requestFrame).toHaveBeenCalled();
     expect(tabs.scrollLeft).toBeGreaterThan(0);
-    fireEvent.dragEnd(source, { dataTransfer });
+    firePointer(window, 'pointerup', 295);
     expect(cancelFrame).toHaveBeenCalledWith(17);
   });
 
   it('拖到标签栏末尾空白区域时插入到最后', () => {
     const onReorderDocument = vi.fn();
-    const { container } = renderHeader({ onReorderDocument });
-    const tabs = container.querySelector<HTMLElement>('.tabs-scroll')!;
+    renderHeader({ onReorderDocument });
     const source = screen.getByRole('button', { name: 'One' });
-    const dataTransfer = { effectAllowed: 'none', dropEffect: 'none', setData: vi.fn() };
-    fireEvent.dragStart(source, { dataTransfer });
-    const dragOver = createEvent.dragOver(tabs, { dataTransfer });
-    Object.defineProperty(dragOver, 'clientX', { value: 500 });
-    fireEvent(tabs, dragOver);
-    fireEvent.drop(tabs, { dataTransfer });
+    firePointer(source, 'pointerdown', 10);
+    firePointer(window, 'pointermove', 500);
+    firePointer(window, 'pointerup', 500);
     expect(onReorderDocument).toHaveBeenCalledWith('one', 2);
+  });
+
+  it('未超过阈值时仍按普通点击选择文档', () => {
+    const onSelectDocument = vi.fn();
+    const { getByRole } = renderHeader({ onSelectDocument });
+    const source = getByRole('button', { name: 'One' });
+
+    firePointer(source, 'pointerdown', 10);
+    firePointer(window, 'pointermove', 14);
+    firePointer(window, 'pointerup', 14);
+    fireEvent.click(source);
+
+    expect(onSelectDocument).toHaveBeenCalledWith('one');
+  });
+
+  it('拖动结束后的 click 不会切换活动文档', () => {
+    const onReorderDocument = vi.fn();
+    const onSelectDocument = vi.fn();
+    const { getByRole } = renderHeader({ onReorderDocument, onSelectDocument });
+    const source = getByRole('button', { name: 'One' });
+    const target = getByRole('button', { name: 'Three' }).closest('.document-tab') as HTMLElement;
+    target.getBoundingClientRect = () => ({
+      x: 100, y: 0, left: 100, right: 200, top: 0, bottom: 48, width: 100, height: 48,
+      toJSON: () => ({}),
+    });
+
+    firePointer(source, 'pointerdown', 10);
+    firePointer(window, 'pointermove', 180);
+    firePointer(window, 'pointerup', 180);
+    fireEvent.click(source);
+
+    expect(onReorderDocument).toHaveBeenCalledOnce();
+    expect(onSelectDocument).not.toHaveBeenCalled();
+  });
+
+  it('按 Esc 取消拖动且不触发重排', () => {
+    const onReorderDocument = vi.fn();
+    const { container, getByRole } = renderHeader({ onReorderDocument });
+    const source = getByRole('button', { name: 'One' });
+    const target = getByRole('button', { name: 'Two' }).closest('.document-tab') as HTMLElement;
+    target.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, right: 100, top: 0, bottom: 48, width: 100, height: 48,
+      toJSON: () => ({}),
+    });
+
+    firePointer(source, 'pointerdown', 50);
+    firePointer(window, 'pointermove', 10);
+    expect(target).toHaveClass('drop-before');
+    fireEvent(window, new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    firePointer(window, 'pointerup', 10);
+
+    expect(onReorderDocument).not.toHaveBeenCalled();
+    expect(container.querySelector('.drop-before')).toBeNull();
+    expect(container.querySelector('.is-dragging')).toBeNull();
   });
 
   it('树操作贴近内容，长值只收缩 value 而不挤压 key', () => {
@@ -523,6 +561,14 @@ describe('dialogs', () => {
     rerender(<SettingsDialog open={false} settings={settings} onChange={vi.fn()} onClose={vi.fn()} />);
     expect(trigger).toHaveFocus();
     trigger.remove();
+  });
+
+  it('关于弹窗展示 package.json 的版本号', () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../package.json'), 'utf8'),
+    ) as { version: string };
+    render(<AboutDialog open onClose={vi.fn()} />);
+    expect(screen.getByText(`JSON FORGE · ${packageJson.version}`)).toBeInTheDocument();
   });
 });
 

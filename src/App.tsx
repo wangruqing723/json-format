@@ -474,7 +474,10 @@ export function App() {
   useEffect(() => {
     if (!nativeSessionReady) return;
     let unlisten: (() => void) | undefined;
-    void listenForJsonDrops(acceptOpenedFiles)
+    void listenForJsonDrops(
+      acceptOpenedFiles,
+      (error) => showToast(error instanceof Error ? error.message : '无法读取拖入的文件', 'error'),
+    )
       .then((cleanup) => { unlisten = cleanup; })
       .catch((error) => showToast(error instanceof Error ? error.message : '无法读取拖入的文件', 'error'));
     return () => unlisten?.();

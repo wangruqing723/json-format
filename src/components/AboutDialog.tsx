@@ -47,7 +47,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
       >
         <header className="dialog-title-row">
           <div>
-            <span className="dialog-eyebrow">JSON FORGE · 0.1.0</span>
+            <span className="dialog-eyebrow">JSON FORGE · {__APP_VERSION__}</span>
             <h2 id="about-title">关于与帮助</h2>
           </div>
           <button ref={closeRef} className="icon-button" type="button" onClick={onClose} aria-label="关闭关于 JSON Forge">

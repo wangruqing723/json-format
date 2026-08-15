@@ -6,6 +6,7 @@
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "tsBuildInfoFile": "./node_modules/.cache/tsconfig.node.tsbuildinfo"

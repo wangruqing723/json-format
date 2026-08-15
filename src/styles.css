@@ -381,6 +381,11 @@ button[aria-disabled='true'] {
 
 .document-tab.is-dragging {
   opacity: .5;
+  user-select: none;
+}
+
+.document-tab.is-dragging * {
+  user-select: none;
 }
 
 .document-tab.drop-before::before,
@@ -412,6 +417,7 @@ button[aria-disabled='true'] {
   background: transparent;
   font-size: 12px;
   text-align: left;
+  touch-action: none;
 }
 
 .tab-select span:last-child {

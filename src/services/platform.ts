@@ -208,21 +208,32 @@ export async function revealFileInFolder(path: string) {
   await revealItemInDir(path);
 }
 
-export async function listenForJsonDrops(handler: (files: OpenedJsonFile[]) => void) {
+export async function listenForJsonDrops(
+  handler: (files: OpenedJsonFile[]) => void,
+  onError?: (error: unknown) => void,
+) {
   if (isTauriRuntime()) {
     const [{ getCurrentWebview }, { readTextFile }] = await Promise.all([
       import('@tauri-apps/api/webview'),
       import('@tauri-apps/plugin-fs'),
     ]);
+    const { invoke } = await import('@tauri-apps/api/core');
     return getCurrentWebview().onDragDropEvent(async (event) => {
       if (event.payload.type !== 'drop') return;
       const paths = event.payload.paths.filter((path) => path.toLowerCase().endsWith('.json'));
-      const files = await Promise.all(paths.map(async (path) => ({
-        filePath: path,
-        title: basename(path),
-        content: await readTextFile(path),
-      })));
-      if (files.length) handler(files);
+      if (!paths.length) return;
+      try {
+        const allowedPaths = await invoke<string[]>('allow_dropped_paths', { paths });
+        if (!allowedPaths.length) throw new Error('无法读取拖入的文件');
+        const files = await Promise.all(allowedPaths.map(async (path) => ({
+          filePath: path,
+          title: basename(path),
+          content: await readTextFile(path),
+        })));
+        if (files.length) handler(files);
+      } catch (error) {
+        onError?.(error);
+      }
     });
   }
 

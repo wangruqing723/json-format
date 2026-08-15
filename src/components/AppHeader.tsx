@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import type { DocumentId, JsonDocument } from '../types';
 import { Icon } from './Icon';
 
@@ -19,6 +25,9 @@ export interface AppHeaderProps {
   onToggleTheme: () => void;
 }
 
+type DropTarget = { id: DocumentId; edge: 'before' | 'after' };
+type PendingPointer = { id: DocumentId; startX: number };
+
 export function AppHeader({
   sidebarCollapsed,
   onToggleSidebar,
@@ -34,15 +43,16 @@ export function AppHeader({
   onToggleTheme,
 }: AppHeaderProps) {
   const tabsRef = useRef<HTMLDivElement>(null);
+  const pendingPointerRef = useRef<PendingPointer | null>(null);
   const draggedIdRef = useRef<DocumentId | null>(null);
-  const dropTargetRef = useRef<{ id: DocumentId; edge: 'before' | 'after' } | null>(null);
+  const dropTargetRef = useRef<DropTarget | null>(null);
   const pointerXRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  const pointerListenersCleanupRef = useRef<(() => void) | null>(null);
+  const suppressClickRef = useRef(false);
+  const suppressClickTimerRef = useRef<number | null>(null);
   const [draggedId, setDraggedId] = useState<DocumentId | null>(null);
-  const [dropTarget, setDropTarget] = useState<{
-    id: DocumentId;
-    edge: 'before' | 'after';
-  } | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
 
   const stopAutoScroll = useCallback(() => {
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
@@ -75,68 +85,136 @@ export function AppHeader({
     }
   }, [runAutoScroll]);
 
+  const updateDropTarget = useCallback((clientX: number, shouldScroll = true) => {
+    const container = tabsRef.current;
+    if (!container || !documents.length) return;
+
+    const tabs = Array.from(container.querySelectorAll<HTMLElement>('.document-tab'));
+    let targetIndex = tabs.findIndex((tab) => {
+      const rect = tab.getBoundingClientRect();
+      return clientX >= rect.left && clientX <= rect.right;
+    });
+
+    if (targetIndex < 0) {
+      targetIndex = tabs.findIndex((tab) => clientX < tab.getBoundingClientRect().left);
+      if (targetIndex < 0) targetIndex = documents.length - 1;
+    }
+
+    const targetTab = tabs[targetIndex];
+    const targetDocument = documents[targetIndex];
+    if (!targetTab || !targetDocument) return;
+
+    const rect = targetTab.getBoundingClientRect();
+    const target: DropTarget = {
+      id: targetDocument.id,
+      edge: clientX < rect.left + rect.width / 2 ? 'before' : 'after',
+    };
+    dropTargetRef.current = target;
+    setDropTarget(target);
+    if (shouldScroll) updateAutoScroll(clientX);
+  }, [documents, updateAutoScroll]);
+
+  const clearPointerListeners = useCallback(() => {
+    const cleanup = pointerListenersCleanupRef.current;
+    pointerListenersCleanupRef.current = null;
+    cleanup?.();
+  }, []);
+
   const clearDragState = useCallback(() => {
+    pendingPointerRef.current = null;
     draggedIdRef.current = null;
     dropTargetRef.current = null;
     setDraggedId(null);
     setDropTarget(null);
     stopAutoScroll();
-  }, [stopAutoScroll]);
+    clearPointerListeners();
+  }, [clearPointerListeners, stopAutoScroll]);
 
-  useEffect(() => stopAutoScroll, [stopAutoScroll]);
-
-  const handleDragStart = (event: DragEvent<HTMLButtonElement>, id: DocumentId) => {
-    draggedIdRef.current = id;
-    setDraggedId(id);
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('application/x-json-forge-tab', id);
-    event.dataTransfer.setData('text/plain', id);
-  };
-
-  const handleDragOver = (event: DragEvent<HTMLDivElement>, id: DocumentId) => {
-    if (!draggedIdRef.current) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = 'move';
-    const rect = event.currentTarget.getBoundingClientRect();
-    const target = {
-      id,
-      edge: event.clientX < rect.left + rect.width / 2 ? 'before' as const : 'after' as const,
-    };
-    dropTargetRef.current = target;
-    setDropTarget(target);
-    updateAutoScroll(event.clientX);
-  };
-
-  const handleTabsDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (!draggedIdRef.current || event.target !== event.currentTarget) return;
-    const lastDocument = documents.at(-1);
-    if (!lastDocument) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = 'move';
-    const target = { id: lastDocument.id, edge: 'after' as const };
-    dropTargetRef.current = target;
-    setDropTarget(target);
-    updateAutoScroll(event.clientX);
-  };
-
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    const sourceId = draggedIdRef.current;
-    event.preventDefault();
-    event.stopPropagation();
-    const target = dropTargetRef.current;
-    if (sourceId && target) {
-      const sourceIndex = documents.findIndex((document) => document.id === sourceId);
-      const hoverIndex = documents.findIndex((document) => document.id === target.id);
-      if (sourceIndex >= 0 && hoverIndex >= 0) {
-        const boundary = hoverIndex + (target.edge === 'after' ? 1 : 0);
-        const targetIndex = boundary - (sourceIndex < boundary ? 1 : 0);
-        onReorderDocument(sourceId, targetIndex);
-      }
+  const suppressNextClick = useCallback(() => {
+    suppressClickRef.current = true;
+    if (suppressClickTimerRef.current !== null) {
+      window.clearTimeout(suppressClickTimerRef.current);
     }
+    suppressClickTimerRef.current = window.setTimeout(() => {
+      suppressClickRef.current = false;
+      suppressClickTimerRef.current = null;
+    }, 0);
+  }, []);
+
+  const commitDrop = useCallback((sourceId: DocumentId, target: DropTarget | null) => {
+    if (!target) return;
+    const sourceIndex = documents.findIndex((document) => document.id === sourceId);
+    const hoverIndex = documents.findIndex((document) => document.id === target.id);
+    if (sourceIndex < 0 || hoverIndex < 0) return;
+
+    const boundary = hoverIndex + (target.edge === 'after' ? 1 : 0);
+    const targetIndex = boundary - (sourceIndex < boundary ? 1 : 0);
+    onReorderDocument(sourceId, targetIndex);
+  }, [documents, onReorderDocument]);
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>, id: DocumentId) => {
+    if (event.button !== 0) return;
     clearDragState();
+    pendingPointerRef.current = { id, startX: event.clientX };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const pending = pendingPointerRef.current;
+      if (!pending) return;
+      if (!draggedIdRef.current && Math.abs(moveEvent.clientX - pending.startX) <= 4) return;
+      if (!draggedIdRef.current) {
+        draggedIdRef.current = pending.id;
+        setDraggedId(pending.id);
+      }
+      moveEvent.preventDefault();
+      updateDropTarget(moveEvent.clientX);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      const sourceId = draggedIdRef.current;
+      if (sourceId) {
+        upEvent.preventDefault();
+        updateDropTarget(upEvent.clientX, false);
+        suppressNextClick();
+        commitDrop(sourceId, dropTargetRef.current);
+      }
+      clearDragState();
+    };
+
+    const handlePointerCancel = () => clearDragState();
+    const handleKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key !== 'Escape') return;
+      keyEvent.preventDefault();
+      clearDragState();
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerCancel);
+    window.addEventListener('keydown', handleKeyDown);
+    pointerListenersCleanupRef.current = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerCancel);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   };
+
+  const handleTabClick = (id: DocumentId) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      if (suppressClickTimerRef.current !== null) {
+        window.clearTimeout(suppressClickTimerRef.current);
+        suppressClickTimerRef.current = null;
+      }
+      return;
+    }
+    onSelectDocument(id);
+  };
+
+  useEffect(() => () => {
+    clearDragState();
+    if (suppressClickTimerRef.current !== null) window.clearTimeout(suppressClickTimerRef.current);
+  }, [clearDragState]);
 
   return (
     <header className={`app-header${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`}>
@@ -157,31 +235,23 @@ export function AppHeader({
           </button>
         </div>
         <div className="header-documents" aria-label="文档标签">
-          <div
-            ref={tabsRef}
-            className="tabs-scroll"
-            onDragOver={handleTabsDragOver}
-            onDrop={handleDrop}
-          >
+          <div ref={tabsRef} className="tabs-scroll">
             {documents.map((document) => (
               <div
                 key={document.id}
                 className={`document-tab${document.id === activeDocumentId ? ' is-active' : ''}${draggedId === document.id ? ' is-dragging' : ''}${dropTarget?.id === document.id ? ` drop-${dropTarget.edge}` : ''}`}
-                onDragOver={(event) => handleDragOver(event, document.id)}
               >
                 <button
                   type="button"
                   className="tab-select"
-                  draggable
-                  onDragStart={(event) => handleDragStart(event, document.id)}
-                  onDragEnd={clearDragState}
-                  onClick={() => onSelectDocument(document.id)}
+                  onPointerDown={(event) => handlePointerDown(event, document.id)}
+                  onClick={() => handleTabClick(document.id)}
                   title={document.filePath ?? document.title}
                 >
                   <span className={document.savedContent !== document.content ? 'dirty-dot is-dirty' : 'dirty-dot'} />
                   <span>{document.title}</span>
                 </button>
-                <button className="tab-close" type="button" draggable={false} onDragStart={(event) => event.preventDefault()} onClick={() => onCloseDocument(document.id)} aria-label={`关闭 ${document.title}`}>
+                <button className="tab-close" type="button" onClick={() => onCloseDocument(document.id)} aria-label={`关闭 ${document.title}`}>
                   <Icon name="close" size={13} />
                 </button>
               </div>

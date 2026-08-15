@@ -1,10 +1,15 @@
 import { defineConfig } from 'vitest/config';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import packageJson from './package.json';
 
 export default defineConfig({
   plugins: [tailwindcss(), react()],
   clearScreen: false,
+  // 版本号只有 package.json 一处来源，避免界面写死后与发布版本脱节。
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version),
+  },
   build: {
     rollupOptions: {
       output: {
