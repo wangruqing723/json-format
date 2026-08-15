@@ -111,6 +111,12 @@ jobs:
       contents: write
 
     steps:
+      # 发布说明要按 tag 区间取提交记录，所以这一 job 也需要完整历史。
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: Download platform bundles
         uses: actions/download-artifact@v4
         with:
@@ -120,6 +126,47 @@ jobs:
 
       - name: List downloaded bundles
         run: find installers -type f -print
+
+      - name: Compose release notes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          previous_tag="$(git describe --tags --abbrev=0 "${TAG_NAME}^" 2>/dev/null || true)"
+          if [ -n "${previous_tag}" ]; then
+            range="${previous_tag}..${TAG_NAME}"
+            echo "上一个 tag：${previous_tag}"
+          else
+            range="${TAG_NAME}"
+            echo "未找到上一个 tag，收录全部提交"
+          fi
+          {
+            echo "JSON Forge ${TAG_NAME} 桌面安装包。"
+            echo
+            echo "## 本版更新"
+            echo
+            git log --no-merges --reverse --pretty=format:'### %s%n%n%b' "${range}"
+          } > RELEASE_NOTES.md
+          cat >> RELEASE_NOTES.md <<'FOOTER'
+
+          ## 下载哪个文件
+
+          | 平台 | 文件 |
+          | --- | --- |
+          | macOS (Intel + Apple Silicon) | `.dmg` 安装镜像，或 `.app.zip` 直接解压运行 |
+          | Windows x64 | `.msi` 安装包，或 NSIS `.exe`（安装到当前用户） |
+
+          ## 安装包未签名
+
+          这些产物没有经过 Apple Developer ID 签名与公证，也没有 Windows
+          Authenticode 签名，因此系统会拦截：
+
+          - macOS：首次打开会提示无法验证开发者。在 Finder 里右键点击应用选「打开」，
+            或执行 `xattr -dr com.apple.quarantine "/Applications/JSON Forge.app"`。
+          - Windows：SmartScreen 会提示「未知发布者」，点「更多信息」→「仍要运行」。
+          FOOTER
+          echo "--- RELEASE_NOTES.md ---"
+          cat RELEASE_NOTES.md
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -133,19 +180,4 @@ jobs:
             installers/**/*.app.zip
             installers/**/*.msi
             installers/**/*.exe
-          body: |
-            JSON Forge ${{ github.ref_name }} 桌面安装包。
-
-            | 平台 | 文件 |
-            | --- | --- |
-            | macOS (Intel + Apple Silicon) | `.dmg` 安装镜像，或 `.app.zip` 直接解压运行 |
-            | Windows x64 | `.msi` 安装包，或 NSIS `.exe`（安装到当前用户） |
-
-            ## 安装包未签名
-
-            这些产物没有经过 Apple Developer ID 签名与公证，也没有 Windows
-            Authenticode 签名，因此系统会拦截：
-
-            - macOS：首次打开会提示无法验证开发者。在 Finder 里右键点击应用选「打开」，
-              或执行 `xattr -dr com.apple.quarantine "/Applications/JSON Forge.app"`。
-            - Windows：SmartScreen 会提示「未知发布者」，点「更多信息」→「仍要运行」。
+          body_path: RELEASE_NOTES.md
