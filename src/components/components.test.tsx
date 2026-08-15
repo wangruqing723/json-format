@@ -262,6 +262,12 @@ describe('AppHeader', () => {
     expect(css).toMatch(/\.tree-value\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1 1 0[^}]*text-overflow:\s*ellipsis/s);
     expect(css).toMatch(/\.tree-virtual-content\s*\{[^}]*min-width:\s*100%/s);
   });
+
+  it('链接值的点击区贴住文本，不撑满整行也不居中', () => {
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../styles.css'), 'utf8');
+    expect(css).toMatch(/\.tree-url-value\s*\{[^}]*flex:\s*0 1 auto/s);
+    expect(css).toMatch(/\.tree-url-value\s*\{[^}]*text-align:\s*left/s);
+  });
 });
 
 describe('TreeView', () => {
