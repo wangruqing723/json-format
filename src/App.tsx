@@ -53,6 +53,9 @@ import type { JsonDiagnostic, ProcessingMeta, WorkerOperation } from './types';
 import { formatBytes } from './utils/format';
 
 const AUTO_VALIDATE_LIMIT = 10 * 1024 * 1024;
+// 主线程解析的节流。和下面后台校验的 320ms 同值：两者都由内容变化驱动，
+// 取同一个值才能让状态栏与树视图在同一拍刷新，不出现一个先跳一个后跳。
+const PARSE_THROTTLE_MS = 320;
 const DIFF_VIEW_LIMIT = 5 * 1024 * 1024;
 
 type OutputMode = 'replace' | 'new-tab';
@@ -207,10 +210,28 @@ export function App() {
   if (!actionWorkerRef.current) actionWorkerRef.current = new JsonWorkerClient();
   if (!validationWorkerRef.current) validationWorkerRef.current = new JsonWorkerClient();
 
+  // 解析走节流后的副本，而不是直接盯 content：parseJson + containsDuplicateKeys 是主线程
+  // 同步活儿，1.5MB 文档单次约 44ms，再加树视图 flatten 上百毫秒。逐键触发会让连续输入
+  // 排成一长串同步任务，表现就是敲不动、松手后好几秒才追上。
+  const [parseSource, setParseSource] = useState(() => activeDocument?.content ?? '');
+  const parseSourceDocumentRef = useRef(activeDocument?.id);
+
+  useEffect(() => {
+    const content = activeDocument?.content ?? '';
+    // 切换文档要立刻解析：否则新标签会空白 320ms，像是没打开。
+    if (parseSourceDocumentRef.current !== activeDocument?.id) {
+      parseSourceDocumentRef.current = activeDocument?.id;
+      setParseSource(content);
+      return;
+    }
+    const timer = window.setTimeout(() => setParseSource(content), PARSE_THROTTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [activeDocument?.content, activeDocument?.id]);
+
   const parseResult = useMemo<{ root: JsonNode | null; parseError: string | null; hasDuplicates: boolean }>(() => {
-    if (!activeDocument?.content.trim()) return { root: null, parseError: 'JSON 内容为空', hasDuplicates: false };
+    if (!parseSource.trim()) return { root: null, parseError: 'JSON 内容为空', hasDuplicates: false };
     try {
-      const root = parseJson(activeDocument.content);
+      const root = parseJson(parseSource);
       return { root, parseError: null, hasDuplicates: containsDuplicateKeys(root) };
     } catch (error) {
       return {
@@ -219,7 +240,7 @@ export function App() {
         hasDuplicates: false,
       };
     }
-  }, [activeDocument?.content]);
+  }, [parseSource]);
 
   const queryResult = useMemo<QueryResult | null>(() => {
     if (!parseResult.root || !searchInput.trim()) return null;
@@ -237,9 +258,10 @@ export function App() {
     setSelectedPath('$');
   }, [activeDocument?.id]);
 
+  // 跟着节流后的解析源清空：隐藏路径是树视图状态，逐键清一次纯属白跑重渲染。
   useEffect(() => {
     setHiddenPaths(new Set());
-  }, [activeDocument?.content]);
+  }, [parseSource]);
 
   useEffect(() => {
     if (!queryResult || activeDocument?.collapsedPane === 'tree') return;

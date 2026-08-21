@@ -130,7 +130,9 @@ pub struct NativeSessionLoadResult {
     snapshot_ids: BTreeMap<String, String>,
 }
 
-#[tauri::command]
+// `(async)` 让 Tauri 把这个同步函数 spawn 到异步运行时，而不是主线程。
+// 恢复要读清单并逐个校验文档快照，跑在主线程会让窗口连加载态都画不出来。
+#[tauri::command(async)]
 pub fn load_workspace_session(
     app: AppHandle,
     state: State<'_, SessionStore>,
@@ -142,7 +144,10 @@ pub fn load_workspace_session(
     load_at(&session_root(&app)?)
 }
 
-#[tauri::command]
+// 同样必须离开主线程：输入期间每 750ms 提交一次，单次要 fsync 写快照、重读全部文档
+// 校验、再 fsync 写清单，还要清理旧世代。跑在主线程时这段时间 webview 是冻住的，
+// 表现就是打字卡死；浏览器那条 localStorage 路径走 requestIdleCallback，永远不跟输入抢。
+#[tauri::command(async)]
 pub fn commit_workspace_session(
     app: AppHandle,
     state: State<'_, SessionStore>,
