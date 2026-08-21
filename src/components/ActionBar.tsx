@@ -21,6 +21,7 @@ export interface ActionBarProps {
   onMinify: () => void;
   onSort: () => void;
   onRepair: () => void;
+  onStripNewlines: () => void;
   transformsDisabled: boolean;
   disabledReason: string | null;
   recentFiles: RecentFile[];
@@ -45,6 +46,7 @@ export function ActionBar({
   onMinify,
   onSort,
   onRepair,
+  onStripNewlines,
   transformsDisabled,
   disabledReason,
   recentFiles,
@@ -133,6 +135,9 @@ export function ActionBar({
         </button>
         <button className={`tool-button toolbar-secondary${transformsDisabled ? ' is-disabled' : ''}`} type="button" aria-disabled={transformsDisabled} onClick={onRepair} data-tooltip={disabledReason ?? '使用确定性规则修复'} aria-label="使用确定性规则修复">
           <Icon name="auto_fix_high" size={16} /><span>修复</span>
+        </button>
+        <button className={`tool-button toolbar-secondary${transformsDisabled ? ' is-disabled' : ''}`} type="button" aria-disabled={transformsDisabled} onClick={onStripNewlines} data-tooltip={disabledReason ?? '删除字符串内的 \\n \\r \\t 转义'} aria-label="去除换行">
+          <Icon name="delete_sweep" size={16} /><span>去除换行</span>
         </button>
       </div>
       <div className="toolbar-spacer" />

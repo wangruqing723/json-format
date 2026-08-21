@@ -77,6 +77,97 @@ describe('processWorkerRequest', () => {
     expect(response.result).toBe('{\n  "name": "forge"\n}');
   });
 
+  it('去除换行删掉字符串值内的 \\n \\r \\t 且不补空格', () => {
+    const response = expectSuccess(
+      process('strip-newlines', '{"msg":"第一行\\n第二行","win":"a\\r\\nb","tab":"x\\ty"}', { compact: true }),
+    );
+
+    expect(response.result).toBe('{"msg":"第一行第二行","win":"ab","tab":"xy"}');
+  });
+
+  it('去除换行把折行处的缩进一并吃掉，断点真正接上', () => {
+    // 终端硬折断长行 → 修复转成 \n + 下一行缩进；只删 \n 会残留空格，断点接不上。
+    const response = expectSuccess(
+      process('strip-newlines', '{"resource\\n  Category":"oss/asset/\\n    2026/06/a.pdf"}', { compact: true }),
+    );
+
+    expect(response.result).toBe('{"resourceCategory":"oss/asset/2026/06/a.pdf"}');
+  });
+
+  it('去除换行只吃换行后的缩进，换行前的空格照旧保留', () => {
+    const response = expectSuccess(
+      process('strip-newlines', '{"text":"句子一 \\n  句子二"}', { compact: true }),
+    );
+
+    expect(response.result).toBe('{"text":"句子一 句子二"}');
+  });
+
+  it('去除换行同时处理 Unicode 等价写法和对象键', () => {
+    const response = expectSuccess(
+      process('strip-newlines', '{"k\\u000Aey":"v\\u000D\\u0009w"}', { compact: true }),
+    );
+
+    expect(response.result).toBe('{"key":"vw"}');
+  });
+
+  it('去除换行保留其他转义，不误伤字面反斜杠后的 n', () => {
+    const response = expectSuccess(
+      process('strip-newlines', '{"path":"C:\\\\new\\\\tmp","quote":"say \\"hi\\"","uni":"\\u00e9"}', { compact: true }),
+    );
+
+    // "C:\\new\\tmp" 里的 \\ 是字面反斜杠，后面的 n/t 是普通字母，必须原样留下。
+    expect(response.result).toBe('{"path":"C:\\\\new\\\\tmp","quote":"say \\"hi\\"","uni":"\\u00e9"}');
+  });
+
+  it('去除换行让键撞成重复时按输出位置报告警告', () => {
+    const response = expectSuccess(process('strip-newlines', '{"a\\nb":1,"ab":2}', { compact: true }));
+
+    expect(response.result).toBe('{"ab":1,"ab":2}');
+    expect(response.meta.warnings).toHaveLength(1);
+    expect(response.meta.warnings?.[0]).toMatchObject({ code: 'DUPLICATE_KEY', severity: 'warning' });
+  });
+
+  it('去除换行默认按缩进重排，物理换行属于排版不受影响', () => {
+    const response = expectSuccess(process('strip-newlines', '{"msg":"a\\nb"}'));
+
+    expect(response.result).toBe('{\n  "msg": "ab"\n}');
+  });
+
+  it('修复并去除换行一步接回被终端硬折断的长行', () => {
+    // 字符串中间是真实换行 + 下一行缩进：终端/日志折断长行的典型产物。
+    const source = [
+      '{',
+      '  "assetPackUrl": "oss/eduzhiyuan/asset/',
+      '  2026/06/16/1781597774065_9c1e544b579ae20f.pdf",',
+      '  "resource',
+      '  Category": "prepare",',
+      '  "treeNodes": { "chapter": ["013_',
+      '      001"] }',
+      '}',
+    ].join('\n');
+
+    // 组合操作和单独修复一样按缩进重排，不接受 compact。
+    const response = expectSuccess(process('repair-strip-newlines', source));
+
+    expect(response.result).toBe([
+      '{',
+      '  "assetPackUrl": "oss/eduzhiyuan/asset/2026/06/16/1781597774065_9c1e544b579ae20f.pdf",',
+      '  "resourceCategory": "prepare",',
+      '  "treeNodes": {',
+      '    "chapter": [',
+      '      "013_001"',
+      '    ]',
+      '  }',
+      '}',
+    ].join('\n'));
+  });
+
+  it('单独修复保持原语义，只把字面换行转成转义而不接回折行', () => {
+    const response = expectSuccess(process('repair', '{"a":"x\ny"}'));
+
+    expect(response.result).toBe('{\n  "a": "x\\ny"\n}');
+  });
+
   it('转义和反转义可以往返', () => {
     const source = 'line 1\n"line 2"\\path';
     const escaped = expectSuccess(process('escape', source)).result;

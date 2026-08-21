@@ -49,6 +49,8 @@ export type WorkerOperation =
   | 'minify'
   | 'sort'
   | 'repair'
+  | 'strip-newlines'
+  | 'repair-strip-newlines'
   | 'escape'
   | 'unescape'
   | 'stats'
