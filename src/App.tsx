@@ -112,6 +112,8 @@ const operationLabels: Record<WorkerOperation, string> = {
   minify: '压缩',
   sort: '键排序',
   repair: '修复',
+  'strip-newlines': '去除换行',
+  'repair-strip-newlines': '修复并去除换行',
   escape: '转义',
   unescape: '反转义',
   stats: '统计',
@@ -666,7 +668,7 @@ export function App() {
 
     const options = {
       indent: state.settings.indent,
-      ...(operation === 'repair' ? { format: true } : {}),
+      ...(operation === 'repair' || operation === 'repair-strip-newlines' ? { format: true } : {}),
     };
     const task = actionWorkerRef.current!.process(operation, source, options);
     setProcessing({ requestId: task.requestId, operation, documentId: document.id });
@@ -904,6 +906,8 @@ export function App() {
       { id: 'minify', label: '压缩 JSON', keywords: 'minify', action: () => void runOperation('minify') },
       { id: 'sort', label: '递归排序键', keywords: 'sort key', action: () => void runOperation('sort') },
       { id: 'repair', label: '确定性修复', keywords: 'repair fix', action: () => void runOperation('repair') },
+      { id: 'strip-newlines', label: '去除换行符', keywords: 'strip newline linebreak huanhang', action: () => void runOperation('strip-newlines') },
+      { id: 'repair-strip-newlines', label: '修复并去除换行', keywords: 'repair fix strip newline linebreak', action: () => void runOperation('repair-strip-newlines') },
       { id: 'escape', label: '转义字符串', keywords: 'escape', action: () => void runOperation('escape') },
       { id: 'unescape', label: '反转义字符串', keywords: 'unescape', action: () => void runOperation('unescape') },
     ] satisfies AppCommand[] : []),
@@ -1007,6 +1011,8 @@ export function App() {
   const moreActions: MoreAction[] = [
     { id: 'escape', label: '转义字符串', icon: 'bolt', disabled: transformsDisabled, onSelect: () => void runOperation('escape') },
     { id: 'unescape', label: '反转义字符串', icon: 'bolt', disabled: transformsDisabled, onSelect: () => void runOperation('unescape') },
+    { id: 'strip-newlines', label: '去除换行符', icon: 'delete_sweep', disabled: transformsDisabled, onSelect: () => void runOperation('strip-newlines') },
+    { id: 'repair-strip-newlines', label: '修复并去除换行', icon: 'auto_fix_high', disabled: transformsDisabled, onSelect: () => void runOperation('repair-strip-newlines') },
     ...(activeDocument.filePath ? [{ id: 'reveal', label: '在文件管理器中显示', icon: 'folder_open', onSelect: () => void revealCurrentFile() }] : []),
     { id: 'format-new-tab', label: '格式化到新标签', icon: 'note_add', disabled: transformsDisabled, onSelect: () => void runOperation('format', 'new-tab') },
     { id: 'minify-new-tab', label: '压缩到新标签', icon: 'note_add', disabled: transformsDisabled, onSelect: () => void runOperation('minify', 'new-tab') },
@@ -1047,6 +1053,7 @@ export function App() {
             onMinify={() => void runOperation('minify')}
             onSort={() => void runOperation('sort')}
             onRepair={() => void runOperation('repair')}
+            onStripNewlines={() => void runOperation('strip-newlines')}
             transformsDisabled={transformsDisabled}
             disabledReason={transformBlockedReason(diff, historyOpen, Boolean(processing))}
             recentFiles={recentFiles}

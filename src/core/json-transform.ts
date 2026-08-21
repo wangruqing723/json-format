@@ -24,6 +24,100 @@ export function sortJsonNode(node: JsonNode): JsonNode {
   return { ...node, entries };
 }
 
+/**
+ * 递归清掉字符串（含对象键）里表示换行/回车/制表的转义序列，直接删除不补空格。
+ * 只动 \n \r \t 与等价的 Unicode 写法，其余转义（\" \\ \/ \b \f、其他 \uXXXX）
+ * 按原样保留 —— 这样输出仍是原 token 的最小改动版本，不会因为重新序列化而改写无关转义。
+ */
+export function stripEscapedNewlines(node: JsonNode): JsonNode {
+  if (node.type === 'array') {
+    return { ...node, items: node.items.map(stripEscapedNewlines) };
+  }
+  if (node.type === 'object') {
+    return {
+      ...node,
+      entries: node.entries.map((entry) => {
+        const keyRaw = stripWhitespaceEscapes(entry.keyRaw);
+        return {
+          ...entry,
+          keyRaw,
+          key: JSON.parse(keyRaw) as string,
+          value: stripEscapedNewlines(entry.value),
+        };
+      }),
+    };
+  }
+  if (node.type !== 'string') return node;
+
+  const raw = stripWhitespaceEscapes(node.raw);
+  if (raw === node.raw) return node;
+  return { ...node, raw, value: JSON.parse(raw) as string };
+}
+
+/**
+ * 逐字符扫描 JSON 字符串 token（含首尾引号），只丢弃空白类转义。
+ *
+ * 换行/回车后紧跟的缩进也一并吃掉：这类内容多半是终端或日志把长行硬折断留下的
+ * 「换行 + 下一行缩进」，只删换行会让 "resource\n  Category" 变成 "resource  Category"，
+ * 断点仍然没接上。代价是真多行文本的行首缩进会丢，但那种文本按下本按钮本就是要压平。
+ */
+function stripWhitespaceEscapes(raw: string): string {
+  if (!raw.includes('\\')) return raw;
+
+  let result = '';
+  let index = 0;
+  while (index < raw.length) {
+    if (raw[index] !== '\\') {
+      result += raw[index];
+      index++;
+      continue;
+    }
+
+    const escape = readWhitespaceEscape(raw, index);
+    if (!escape) {
+      // \\ 必须整对搬走，否则后面的字面 n 会被误当成转义序列。
+      const width = raw[index + 1] === 'u' ? 6 : 2;
+      result += raw.slice(index, index + width);
+      index += width;
+      continue;
+    }
+
+    index += escape.width;
+    if (escape.kind !== 'break') continue;
+    // 折行处的缩进：字面空格，以及被转义写法表示的空白，连续吃到非空白为止。
+    while (index < raw.length) {
+      if (raw[index] === ' ') {
+        index++;
+        continue;
+      }
+      const following = readWhitespaceEscape(raw, index);
+      if (!following) break;
+      index += following.width;
+    }
+  }
+  return result;
+}
+
+/**
+ * 识别 index 处是否为空白类转义，返回它占的字符宽度。
+ * break 表示换行/回车（会触发吃缩进），indent 表示制表符。
+ */
+function readWhitespaceEscape(
+  raw: string,
+  index: number,
+): { kind: 'break' | 'indent'; width: number } | null {
+  if (raw[index] !== '\\') return null;
+  const escaped = raw[index + 1];
+  if (escaped === 'n' || escaped === 'r') return { kind: 'break', width: 2 };
+  if (escaped === 't') return { kind: 'indent', width: 2 };
+  if (escaped !== 'u') return null;
+
+  const code = Number.parseInt(raw.slice(index + 2, index + 6), 16);
+  if (code === 0x0a || code === 0x0d) return { kind: 'break', width: 6 };
+  if (code === 0x09) return { kind: 'indent', width: 6 };
+  return null;
+}
+
 export function collectDuplicateKeyWarnings(source: string, node: JsonNode): JsonDiagnostic[] {
   const warnings: JsonDiagnostic[] = [];
   visit(node, (current) => {

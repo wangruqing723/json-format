@@ -16,6 +16,7 @@ import {
   formatJsonNode,
   minifyJsonNode,
   sortJsonNode,
+  stripEscapedNewlines,
 } from './json-transform';
 
 export function processWorkerRequest(request: WorkerRequest): WorkerResponse {
@@ -68,15 +69,23 @@ function processOperation(
   if (operation === 'unescape') {
     return { result: unescapeString(source), valid: true, warnings: [] };
   }
-  if (operation === 'repair') {
+  if (operation === 'repair' || operation === 'repair-strip-newlines') {
+    const stripping = operation === 'repair-strip-newlines';
     const repaired = jsonrepair(source);
-    const root = parseJson(repaired);
-    const result = options?.format === false ? repaired : formatJsonNode(root, readIndent(options));
+    const parsed = parseJson(repaired);
+    const root = stripping ? stripEscapedNewlines(parsed) : parsed;
+    // 去除换行只存在于节点里，必须重新打印才能落地，因此组合操作不理会 format: false。
+    const result = options?.format === false && !stripping
+      ? repaired
+      : formatJsonNode(root, readIndent(options));
     return {
       result,
       valid: true,
       stats: calculateStats(result, root),
-      warnings: collectDuplicateKeyWarnings(repaired, root),
+      // 组合操作按输出重算警告：键名去换行后可能撞成重复，且 offset 要对齐写回编辑器的文本。
+      warnings: stripping
+        ? collectDuplicateKeyWarnings(result, parseJson(result))
+        : collectDuplicateKeyWarnings(repaired, parsed),
     };
   }
 
@@ -108,6 +117,20 @@ function processOperation(
         ? minifyJsonNode(sorted)
         : formatJsonNode(sorted, readIndent(options));
       return { result, valid: true, stats: calculateStats(result, sorted), warnings };
+    }
+    case 'strip-newlines': {
+      const stripped = stripEscapedNewlines(root);
+      const result = options?.compact
+        ? minifyJsonNode(stripped)
+        : formatJsonNode(stripped, readIndent(options));
+      return {
+        result,
+        valid: true,
+        stats: calculateStats(result, stripped),
+        // 键名里的换行被删掉后可能撞成重复键（"a\nb" 与 "ab" 都变成 "ab"），
+        // 所以重算输出侧的警告：既能发现新产生的碰撞，offset 也对齐即将写回编辑器的内容。
+        warnings: collectDuplicateKeyWarnings(result, parseJson(result)),
+      };
     }
     case 'stats':
       return { result: JSON.stringify(stats), valid: true, stats, warnings };

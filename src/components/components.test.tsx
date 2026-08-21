@@ -84,6 +84,7 @@ describe('ActionBar', () => {
         onMinify={vi.fn()}
         onSort={vi.fn()}
         onRepair={vi.fn()}
+        onStripNewlines={vi.fn()}
         transformsDisabled={false}
         disabledReason={null}
         recentFiles={[]}
