@@ -2119,6 +2119,21 @@ select {
 /* 链接值只把文本做成点击区：`.tree-value` 的 flex: 1 1 0 会把按钮撑满整行剩余宽度，
    而 button 默认 text-align: center，于是 key 与链接文本之间出现一段空白，且点空白也会开链接。 */
 .tree-url-value { flex: 0 1 auto; padding: 0; border: 0; background: transparent; text-align: left; text-decoration: underline; cursor: pointer; }
+/* 树内的值提示：默认 tooltip 居中且不限高，整个子树的 JSON 会糊成一大块；
+   树行又在 overflow: auto 的虚拟滚动容器里，越高越容易被容器下沿裁掉。
+   所以贴左沿、左对齐、限高，长值截断成可读的一小块。 */
+.tree-value[data-tooltip]::after {
+  z-index: 90;
+  left: 0;
+  max-width: min(520px, calc(100vw - 40px));
+  max-height: 132px;
+  overflow: hidden;
+  transform: translateY(-2px);
+  text-align: left;
+  font-family: var(--font-mono);
+}
+.tree-value[data-tooltip]:hover::after,
+.tree-value[data-tooltip]:focus-visible::after { transform: translateY(0); }
 .tree-image-preview { position: absolute; z-index: 5; top: 27px; left: min(55%, 360px); padding: 5px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
 .tree-image-preview img { display: block; max-width: 240px; max-height: 180px; object-fit: contain; }
 

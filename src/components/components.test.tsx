@@ -297,7 +297,12 @@ describe('TreeView', () => {
     );
 
     expect(screen.getByRole('button', { name: '"refresh_token"' })).toHaveTextContent('"refresh_token"');
-    expect(screen.getByTitle(value)).toHaveTextContent(JSON.stringify(value));
+    // 按行定位再比属性值：把 720 字符的值拼进属性选择器会让 jsdom 的选择器引擎
+    // 陷入指数回溯，整个测试进程空转卡死。
+    const tokenRow = screen.getByRole('button', { name: '"refresh_token"' }).closest('[data-tree-row]')!;
+    const valueNode = tokenRow.querySelector('.tree-value')!;
+    expect(valueNode).toHaveAttribute('data-tooltip', value);
+    expect(valueNode).toHaveTextContent(JSON.stringify(value));
   });
 
   it('整行可选择，箭头和行内操作不会附带选择', () => {
@@ -395,14 +400,16 @@ describe('TreeView', () => {
     const onCopy = vi.fn();
     render(<TreeView root={parseJson('{"id":90071992547409931234,"key":1,"key":2}')} parseError={null} hasDuplicates={true} expandState={createExpandState()} onExpandChange={vi.fn()} highlightPaths={new Set()} onCopy={onCopy} />);
 
-    expect(screen.getByTitle('90071992547409931234')).toBeInTheDocument();
+    // 值提示走自定义 data-tooltip：原生 title 由系统画在光标处，会压住图片预览。
+    const bigIntRow = screen.getByRole('button', { name: '"id"' }).closest('[data-tree-row]')!;
+    expect(bigIntRow.querySelector('.tree-value')).toHaveAttribute('data-tooltip', '90071992547409931234');
     expect(screen.getByRole('status')).toHaveTextContent('检测到重复键');
     const duplicateRows = screen.getAllByRole('button', { name: '"key"' }).map((button) => button.closest('[data-tree-row]')!);
     expect(duplicateRows).toHaveLength(2);
     for (const row of duplicateRows) {
       expect(within(row).getByRole('button', { name: '复制路径' })).toBeDisabled();
     }
-    const idRow = screen.getByTitle('90071992547409931234').closest('[data-tree-row]')!;
+    const idRow = screen.getByRole('button', { name: '"id"' }).closest('[data-tree-row]')!;
     fireEvent.click(within(idRow).getByRole('button', { name: '复制' }));
     expect(onCopy).toHaveBeenCalledWith('90071992547409931234', '值');
   });
@@ -423,7 +430,7 @@ describe('TreeView', () => {
     );
 
     expect(screen.queryByRole('img')).toBeNull();
-    fireEvent.click(screen.getByTitle('https://example.com/path'));
+    fireEvent.click(document.querySelector('[data-tooltip="https://example.com/path"]')!);
     expect(onOpenExternal).toHaveBeenCalledWith('https://example.com/path');
   });
 

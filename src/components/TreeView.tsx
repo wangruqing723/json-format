@@ -266,7 +266,10 @@ const TreeRow = memo(function TreeRow({
           <button
             type="button"
             className={`tree-value tree-value--${row.node.type} tree-url-value`}
-            title={fullValue}
+            // 用自定义 tooltip 而非原生 title：原生提示由系统画在光标处，正好压住
+            // 紧贴行下沿的图片预览，且位置无法用 CSS 调整。图片预览出现后不再挂提示，
+            // 避免自家 tooltip 二次遮挡预览。
+            {...(showImage ? {} : { 'data-tooltip': fullValue })}
             onClick={(event) => {
               event.stopPropagation();
               const url = externalUrlFromNode(row.node);
@@ -280,7 +283,7 @@ const TreeRow = memo(function TreeRow({
         ) : (
           <span
             className={`tree-value tree-value--${row.node.type}`}
-            title={fullValue}
+            {...(showImage ? {} : { 'data-tooltip': fullValue })}
             onMouseEnter={startImagePreview}
             onMouseLeave={stopImagePreview}
           >{token}{comma}</span>
