@@ -47,6 +47,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   splitOrientation: 'row',
   splitRatio: 0.5,
   allowRemoteImagePreview: false,
+  imeCompatMode: false,
 };
 
 export interface OpenDocumentInput {
@@ -544,6 +545,9 @@ function sanitizeSettings(settings: Partial<AppSettings>): Partial<AppSettings> 
   }
   if (typeof settings.allowRemoteImagePreview === 'boolean') {
     result.allowRemoteImagePreview = settings.allowRemoteImagePreview;
+  }
+  if (typeof settings.imeCompatMode === 'boolean') {
+    result.imeCompatMode = settings.imeCompatMode;
   }
   return result;
 }

@@ -10,7 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const editorSource = readFileSync(join(root, 'src/components/JsonEditor.tsx'), 'utf8');
 const cssSource = readFileSync(join(root, 'src/styles.css'), 'utf8');
 
-function editorPalette(which: 'light' | 'dark'): Record<string, string> {
+function editorPalette(which: string): Record<string, string> {
   const block = editorSource.match(new RegExp(`const ${which}Highlight[\\s\\S]*?\\]\\);`));
   if (!block) throw new Error(`未找到 ${which}Highlight 定义`);
   const out: Record<string, string> = {};
@@ -60,6 +60,21 @@ describe('编辑器与树视图的类型配色一致性', () => {
         expect(tree[type], `树视图缺少 ${type} 的取色`).toBeTruthy();
         expect(tree[type], `${theme} 的 ${type}: 树视图 ${tree[type]} 与编辑器 ${editor[tag]} 不一致`)
           .toBe(editor[tag]);
+      }
+    });
+  }
+
+  // 输入法兼容模式的高亮把六种颜色抄了一遍，只去掉字重和斜体。抄一遍就会漂移：
+  // 改了常规版的颜色而漏改这份，开启兼容模式后配色就与关闭时不同，而这一项
+  // 用户开着的时候多半不会再去比对。故逐色钉死。
+  for (const theme of ['light', 'dark'] as const) {
+    it(`${theme === 'light' ? '亮色' : '暗色'}下兼容模式与常规模式配色逐项相同`, () => {
+      const normal = editorPalette(theme);
+      const flat = editorPalette(`${theme}Flat`);
+      expect(Object.keys(flat).sort()).toEqual(Object.keys(normal).sort());
+      for (const tag of Object.keys(normal)) {
+        expect(flat[tag], `${theme} 的 ${tag}: 兼容模式 ${flat[tag]} 与常规 ${normal[tag]} 不一致`)
+          .toBe(normal[tag]);
       }
     });
   }

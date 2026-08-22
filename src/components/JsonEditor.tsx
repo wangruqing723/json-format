@@ -3,13 +3,12 @@ import {
   history,
   historyKeymap,
   indentWithTab,
-  insertNewlineAndIndent,
 } from '@codemirror/commands';
 import { json } from '@codemirror/lang-json';
 import { bracketMatching, foldGutter, HighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language';
 import { Diagnostic, lintGutter, setDiagnostics } from '@codemirror/lint';
 import { openSearchPanel, search, SearchCursor, searchKeymap } from '@codemirror/search';
-import { Compartment, EditorState, Prec, Transaction } from '@codemirror/state';
+import { Compartment, EditorState, Transaction } from '@codemirror/state';
 import {
   Decoration,
   drawSelection,
@@ -26,7 +25,6 @@ import {
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { beginSpan, measureEnterPhases } from '../services/perf-probe';
 
 export interface EditorDiagnostic {
   message: string;
@@ -49,6 +47,8 @@ interface JsonEditorProps {
   onCursorChange?: (line: number, column: number) => void;
   diagnostic?: EditorDiagnostic | null;
   theme: 'light' | 'dark';
+  /** 输入法兼容模式：只用颜色区分语法，不用字重和斜体。见 lightFlatHighlight 的注释。 */
+  imeCompatMode?: boolean;
   readOnly?: boolean;
   ariaLabel?: string;
 }
@@ -144,6 +144,40 @@ const occurrenceHighlighter = ViewPlugin.fromClass(
   { decorations: (value) => value.decorations },
 );
 
+/**
+ * 输入法兼容模式用的高亮：颜色与常规版逐项相同，只去掉 fontWeight 和 fontStyle。
+ *
+ * 第三方输入法（实测豆包）每次编辑后都会调 macOS 的
+ * AttributedSubstringForCharacterRangeAsync 索要光标附近的富文本属性。WebKit 为此
+ * 把范围内文本转成 NSAttributedString，enumerateAttributesInRange 每个属性段调一次
+ * extractDictionary → Font::create，每次都落到 CTFontCopyAttribute →
+ * IsUserInstalled → XTCopyPropertiesForFont 查系统字体注册表。
+ * 字重和斜体各自是独立 NSFont，把 Font::create 的次数翻倍。
+ *
+ * sample 抓栈实测（40 次回车，20 秒采样窗口，豆包输入法）：
+ *   常规高亮   主线程忙 53~56%，输入法查询 920~971 采样，Font::create 504~566
+ *   只留颜色   主线程忙 32.2%，输入法查询 553 采样，Font::create 348
+ *   无高亮     主线程忙 10.0%，输入法查询 139 采样，Font::create 58
+ * 系统自带输入法不会反复查询，因此默认关闭此模式、保留完整配色。
+ */
+const lightFlatHighlight = HighlightStyle.define([
+  { tag: tags.propertyName, color: '#b80048' },
+  { tag: tags.string, color: '#00736a' },
+  { tag: tags.number, color: '#a94f00' },
+  { tag: tags.bool, color: '#7629c0' },
+  { tag: tags.null, color: '#c8102e' },
+  { tag: [tags.brace, tags.squareBracket, tags.separator], color: '#5c3f43' },
+]);
+
+const darkFlatHighlight = HighlightStyle.define([
+  { tag: tags.propertyName, color: '#ff2d78' },
+  { tag: tags.string, color: '#ffe04a' },
+  { tag: tags.number, color: '#ff80aa' },
+  { tag: tags.bool, color: '#00ffcc' },
+  { tag: tags.null, color: '#a098b0' },
+  { tag: [tags.brace, tags.squareBracket, tags.separator], color: '#a098b0' },
+]);
+
 // 亮色同样与树视图对齐：键名取亮色 --accent，标点取亮色 --text-muted。
 const lightHighlight = HighlightStyle.define([
   { tag: tags.propertyName, color: '#b80048', fontWeight: '600' },
@@ -168,10 +202,10 @@ const darkHighlight = HighlightStyle.define([
   { tag: [tags.brace, tags.squareBracket, tags.separator], color: '#a098b0' },
 ]);
 
-function editorTheme(theme: JsonEditorProps['theme']) {
+function editorTheme(theme: JsonEditorProps['theme'], flat = false) {
   return theme === 'dark'
-    ? [darkTheme, syntaxHighlighting(darkHighlight)]
-    : [lightTheme, syntaxHighlighting(lightHighlight)];
+    ? [darkTheme, syntaxHighlighting(flat ? darkFlatHighlight : darkHighlight)]
+    : [lightTheme, syntaxHighlighting(flat ? lightFlatHighlight : lightHighlight)];
 }
 
 function diagnosticToCodeMirror(value: EditorDiagnostic | null | undefined, length: number): Diagnostic[] {
@@ -194,6 +228,7 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
     onCursorChange,
     diagnostic,
     theme,
+    imeCompatMode = false,
     readOnly = false,
     ariaLabel = 'JSON 文本编辑器',
   },
@@ -230,19 +265,8 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
         search({ top: true }),
         // 选中/停在一个词上时，全文相同片段（含当前这处）统一高亮——用户要的「高亮相同项」。
         occurrenceHighlighter,
-        // 回车单独接管以做阶段分解：用户确认卡顿只由回车触发。这里仍执行原命令
-        // insertNewlineAndIndent，只是在它前后取时刻，行为与默认一致。
-        // Prec.high 保证排在 defaultKeymap 的 Enter 之前。
-        Prec.high(keymap.of([{
-          key: 'Enter',
-          run: (view) => {
-            let handled = false;
-            measureEnterPhases(() => { handled = insertNewlineAndIndent(view); }, view.dom);
-            return handled;
-          },
-        }])),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
-        themeCompartment.of(editorTheme(theme)),
+        themeCompartment.of(editorTheme(theme, imeCompatMode)),
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
         EditorView.contentAttributes.of({ 'aria-label': ariaLabel, spellcheck: 'false' }),
         EditorView.updateListener.of((update) => {
@@ -256,17 +280,7 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
       ],
     });
 
-    // 包住 dispatch 计时：CodeMirror 内部的文档更新、装饰重算、DOM 写入都在这里面，
-    // 之前完全没插桩。上一版实测显示卡顿窗口内没有任何已插桩事件，这是首要盲区。
-    const view = new EditorView({
-      state,
-      parent: hostRef.current,
-      dispatchTransactions: (transactions, editorView) => {
-        const endDispatch = beginSpan('cm-dispatch');
-        editorView.update(transactions);
-        endDispatch();
-      },
-    });
+    const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
     return () => {
       view.destroy();
@@ -287,9 +301,9 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
 
   useEffect(() => {
     viewRef.current?.dispatch({
-      effects: themeCompartment.reconfigure(editorTheme(theme)),
+      effects: themeCompartment.reconfigure(editorTheme(theme, imeCompatMode)),
     });
-  }, [theme]);
+  }, [theme, imeCompatMode]);
 
   useEffect(() => {
     viewRef.current?.dispatch({

@@ -2,6 +2,11 @@ name: CI and desktop installers
 
 on:
   workflow_dispatch:
+    inputs:
+      mac_only:
+        description: 只构建 macOS（跳过 Windows，用于快速验证）
+        type: boolean
+        default: false
   pull_request:
   push:
 
@@ -32,7 +37,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-  # 手动触发（定位用的测试包）只出 macOS，正式发布两个平台都出。
+  # 默认两个平台都构建；手动触发时可勾 mac_only 只出 macOS 做快速验证。
+  # （曾经写成「手动触发一律只出 macOS」，那是定位 macOS 卡顿时的临时措施，
+  # 副作用是手动触发再也拿不到 Windows 包，故改为显式开关。）
   # matrix 上下文在 job 级 if 里不可用，所以这里先把矩阵算出来再用 fromJSON 展开。
   plan:
     name: Plan platforms
@@ -44,14 +51,14 @@ jobs:
       - name: Pick platforms
         id: pick
         env:
-          MAC_ONLY: ${{ github.event_name == 'workflow_dispatch' }}
+          MAC_ONLY: ${{ inputs.mac_only }}
         run: |
           set -euo pipefail
           mac='{"name":"macOS","runner":"macos-14","rust_targets":"aarch64-apple-darwin,x86_64-apple-darwin","build_args":"--bundles app,dmg --target universal-apple-darwin","artifact":"json-forge-macos","paths":"src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.zip\nsrc-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg"}'
           win='{"name":"Windows","runner":"windows-latest","rust_targets":"x86_64-pc-windows-msvc","build_args":"--bundles msi,nsis","artifact":"json-forge-windows","paths":"src-tauri/target/release/bundle/msi/*.msi\nsrc-tauri/target/release/bundle/nsis/*.exe"}'
           if [ "${MAC_ONLY}" = "true" ]; then
             include="[${mac}]"
-            echo "手动触发：只构建 macOS"
+            echo "已勾选 mac_only：只构建 macOS"
           else
             include="[${mac},${win}]"
             echo "构建 macOS 与 Windows"

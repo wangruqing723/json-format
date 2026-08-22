@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActionBar, type MoreAction } from './components/ActionBar';
 import { AboutDialog } from './components/AboutDialog';
 import { AppHeader, type WorkspaceView } from './components/AppHeader';
@@ -8,7 +8,6 @@ import { DiffView } from './components/DiffView';
 import { Icon } from './components/Icon';
 import { InfoRow } from './components/InfoRow';
 import { JsonEditor, type JsonEditorHandle } from './components/JsonEditor';
-import { PerfPanel } from './components/PerfPanel';
 import { HistoryView, type HistoryRecord } from './components/HistoryView';
 import { SearchPanel } from './components/SearchPanel';
 import { Sidebar } from './components/Sidebar';
@@ -30,7 +29,6 @@ import {
 } from './core/tree-flatten';
 import { minifyJsonNode } from './core/json-transform';
 import { nodeAtPath } from './core/json-table';
-import { beginSpan, startInteractionProbe, startLongTaskObserver, startWatchdog } from './services/perf-probe';
 import { JsonWorkerClient, WorkerCancelledError } from './services/worker-client';
 import {
   listenForJsonDrops,
@@ -205,7 +203,6 @@ export function App() {
   const [selectedPath, setSelectedPath] = useState<string | null>('$');
   const [tableOpen, setTableOpen] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
-  const [perfOpen, setPerfOpen] = useState(false);
   const [nativeSessionReady, setNativeSessionReady] = useState(() => !isTauriRuntime());
   const [nativeSessionIssue, setNativeSessionIssue] = useState<string | null>(null);
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -233,7 +230,6 @@ export function App() {
 
   const parseResult = useMemo<{ root: JsonNode | null; parseError: string | null; hasDuplicates: boolean }>(() => {
     if (!parseSource.trim()) return { root: null, parseError: 'JSON 内容为空', hasDuplicates: false };
-    const endParse = beginSpan('parse+dupkeys');
     try {
       const root = parseJson(parseSource);
       return { root, parseError: null, hasDuplicates: containsDuplicateKeys(root) };
@@ -243,8 +239,6 @@ export function App() {
         parseError: error instanceof Error ? error.message : '无法解析 JSON',
         hasDuplicates: false,
       };
-    } finally {
-      endParse();
     }
   }, [parseSource]);
 
@@ -386,8 +380,6 @@ export function App() {
 
   useEffect(() => {
     if (!isTauriRuntime() || !nativeSessionReady || nativeSessionBlockedRef.current) return;
-    // 每次按键都会重建快照并做一次引用比对，故计时。
-    const endSnapshot = beginSpan('session-snapshot');
     nativeSessionControllerRef.current?.schedule(workspaceSnapshotFromState({
       documents,
       activeDocumentId,
@@ -395,23 +387,7 @@ export function App() {
       settings,
       recentFiles,
     }));
-    endSnapshot();
   }, [activeDocumentId, diff, documents, nativeSessionReady, recentFiles, settings]);
-
-  // 看门狗常开：定时器迟到多久就是主线程被占住多久。卡顿后再打开面板也能看到已录数据。
-  useEffect(() => startWatchdog(), []);
-  useEffect(() => startLongTaskObserver(), []);
-  // 卡顿未必发生在打字时，点按钮、切标签之后同样要测。
-  useEffect(() => startInteractionProbe(), []);
-
-  // React 渲染 + 提交的耗时同样是盲区。渲染体里起表，useLayoutEffect 在提交后同步执行，
-  // 两者之差即「本次渲染到 DOM 落地」的全部代价。
-  const endRenderRef = useRef<(() => void) | null>(null);
-  endRenderRef.current = beginSpan('react-render+commit');
-  useLayoutEffect(() => {
-    endRenderRef.current?.();
-    endRenderRef.current = null;
-  });
 
   useEffect(() => {
     if (!isTauriRuntime() || !nativeSessionReady || nativeSessionBlockedRef.current) return;
@@ -971,11 +947,6 @@ export function App() {
         return;
       }
       const mod = event.metaKey || event.ctrlKey;
-      if (mod && event.shiftKey && event.key.toLowerCase() === 'p') {
-        event.preventDefault();
-        setPerfOpen((open) => !open);
-        return;
-      }
       if (mod && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         openCommandPanel();
@@ -1184,15 +1155,12 @@ export function App() {
                 ref={editorRef}
                 value={activeDocument.content}
                 theme={resolvedTheme}
+                imeCompatMode={settings.imeCompatMode}
                 diagnostic={activeDiagnostic}
                 onChange={(content) => {
                   if (content === activeDocument.content) return;
-                  // 每次按键的入口。这里只量同步部分：写 store 会连带触发 App 全量重渲染
-                  // （useWorkspaceStore 无 selector），那部分代价也落在这段里。
-                  const endChange = beginSpan('editor-onChange');
                   setMetadata((current) => ({ ...current, [activeDocument.id]: undefined }));
                   updateContent(activeDocument.id, content);
-                  endChange();
                 }}
                 onCursorChange={(line, column) => setCursor({ line, column })}
               />
@@ -1264,7 +1232,6 @@ export function App() {
       <CommandPalette open={commandOpen} commands={commands} onClose={() => setCommandOpen(false)} />
       <SettingsDialog open={settingsOpen} settings={settings} onChange={updateSettings} onClose={() => setSettingsOpen(false)} />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      <PerfPanel open={perfOpen} onClose={() => setPerfOpen(false)} />
       <TableView
         open={tableOpen}
         root={parseResult.root}

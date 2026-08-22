@@ -28,6 +28,15 @@ export interface AppSettings {
   splitOrientation: SplitOrientation;
   splitRatio: number;
   allowRemoteImagePreview: boolean;
+  /**
+   * 输入法兼容模式：编辑器只用颜色区分语法，不用字重和斜体。
+   *
+   * 第三方输入法（实测豆包）会在每次编辑后调 macOS 的
+   * AttributedSubstringForCharacterRangeAsync 索要光标附近的富文本属性，
+   * WebKit 为此逐属性段转换字体，字重和斜体各是独立 NSFont，把转换次数翻倍。
+   * 实测开启后主线程忙碌占比从 53~56% 降到 32%。默认关闭以保留完整配色。
+   */
+  imeCompatMode: boolean;
 }
 
 export interface RecentFile {

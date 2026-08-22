@@ -70,14 +70,24 @@
   --color-secondary: #00ffcc;
   --color-warning: #ffe04a;
   --color-danger: #ff4444;
-  --font-headline: Sora, ui-sans-serif, sans-serif;
-  --font-body: Inter, ui-sans-serif, sans-serif;
-  --font-label: "Space Grotesk", ui-sans-serif, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  /* 中文必须显式列出，且排在通用族之前。
+     自带的四款 webfont 都是 -latin 子集，一个汉字都没有；缺了这几项时
+     WebKit 只能为每段中文去搜系统字体表做回退，而 macOS 输入法在回车后会调
+     AttributedSubstringForCharacterRangeAsync 索要光标附近的富文本属性，
+     WebKit 为此逐属性枚举并对每种字体 Font::create 一次，每次都落到
+     CTFontCopyAttribute → IsUserInstalled → XTCopyPropertiesForFont
+     去查系统字体注册表。中文段数 × 字重变体把它放大到几百次，
+     于是按一次回车卡几秒到几十秒（sample 抓栈实测，见 scripts/analyze-freeze.sh）。
+     Windows 的 WebView2 不走这条路，所以只有 Mac 卡。 */
+  --font-cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei";
+  --font-headline: Sora, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, sans-serif;
+  --font-body: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, sans-serif;
+  --font-label: "Space Grotesk", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, sans-serif;
+  --font-mono: "JetBrains Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-monospace, monospace;
 }
 
 :root {
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --app-bg: #f8f9fd;
@@ -655,7 +665,7 @@ button[aria-disabled='true'] {
 }
 
 .cm-editor {
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: "JetBrains Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 13px;
   letter-spacing: 0;
 }
@@ -681,7 +691,7 @@ button[aria-disabled='true'] {
   height: 100%;
   padding: 7px 0 40px;
   overflow: auto;
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-family: "JetBrains Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
 }
 
@@ -697,7 +707,7 @@ button[aria-disabled='true'] {
   border-bottom: 1px solid var(--warning);
   color: var(--warning);
   background: var(--warning-soft);
-  font-family: Inter, ui-sans-serif, sans-serif;
+  font-family: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, sans-serif;
   font-size: 11px;
 }
 
@@ -896,7 +906,7 @@ button[aria-disabled='true'] {
   min-height: 0;
   padding-bottom: 36px;
   overflow: auto;
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-family: "JetBrains Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
 }
 
@@ -2137,27 +2147,6 @@ select {
 .tree-image-preview { position: absolute; z-index: 5; top: 27px; left: min(55%, 360px); padding: 5px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
 .tree-image-preview img { display: block; max-width: 240px; max-height: 180px; object-fit: contain; }
 
-/* 卡顿实测面板（Ctrl/⌘ Shift P）。定位用，不参与常规工作流。 */
-.perf-panel { position: fixed; z-index: 200; right: 14px; bottom: 14px; display: flex; width: min(460px, calc(100vw - 28px)); max-height: min(560px, calc(100vh - 28px)); flex-direction: column; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--panel); box-shadow: var(--shadow); font-size: 11px; }
-.perf-panel-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
-.perf-panel-head strong { margin-right: auto; }
-.perf-panel-head button { padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); background: var(--panel-subtle); font-size: 10px; }
-.perf-panel-body { min-height: 0; overflow: auto; padding: 4px 12px 10px; }
-.perf-panel-body h4 { margin: 10px 0 5px; color: var(--text-muted); font-size: 10px; font-weight: 600; }
-.perf-panel-body p { margin: 0; color: var(--text-faint); }
-.perf-panel-body ul { margin: 0; padding: 0; list-style: none; }
-.perf-panel-body li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); font-family: var(--font-mono); }
-.perf-panel-body li b { min-width: 62px; color: var(--accent); text-align: right; }
-.perf-panel-body li code { flex: 1; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
-.perf-panel-body li span { color: var(--text-faint); }
-.perf-panel-hint { margin: 0; padding: 7px 12px; border-top: 1px solid var(--border); color: var(--text-muted); }
-.perf-timeline li { gap: 7px; }
-.perf-timeline li span { min-width: 54px; color: var(--text-faint); }
-.perf-timeline li b { min-width: 58px; text-align: right; }
-.perf-timeline li.is-block { background: var(--accent-soft); }
-.perf-timeline li.is-block code { color: var(--accent); font-weight: 700; }
-.perf-verdict { margin: 8px 0 2px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-muted); background: var(--panel-subtle); line-height: 1.45; }
-.perf-verdict.is-caught { border-color: var(--accent); color: var(--text); background: var(--accent-soft); font-weight: 600; }
 
 .table-backdrop { z-index: 20; }
 .table-dialog { display: flex; width: min(900px, calc(100vw - 32px)); max-height: min(720px, calc(100vh - 32px)); flex-direction: column; overflow: hidden; border-radius: 12px; }
