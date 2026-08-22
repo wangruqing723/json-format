@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   beginSpan,
+  capturedFreeze,
   exportTimeline,
+  recordInputLatency,
   mark,
   perfSnapshot,
   recordLateness,
@@ -131,6 +133,32 @@ describe('perf-probe', () => {
 
     expect(text).toContain('最慢按键 Enter');
     expect(text).toContain('输入延迟样本');
+  });
+
+  it('超阈值的交互会锁定现场，后续正常操作不再覆盖', () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'setInterval', 'clearInterval', 'Date', 'performance', 'requestAnimationFrame'],
+    });
+    recordInputLatency('Enter', 900);
+    const frozen = capturedFreeze();
+    expect(frozen).not.toBeNull();
+    expect(frozen!.input.ms).toBe(900);
+
+    // 之后再来一次正常交互，锁定的现场必须保持不变
+    recordInputLatency('char', 20);
+    expect(capturedFreeze()!.input.key).toBe('Enter');
+    expect(exportTimeline()).toContain('已锁定卡顿现场');
+  });
+
+  it('全程健康时导出明说没测到卡顿，不让人误以为已定位', () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'setInterval', 'clearInterval', 'Date', 'performance', 'requestAnimationFrame'],
+    });
+    recordInputLatency('char', 30);
+
+    expect(capturedFreeze()).toBeNull();
+    expect(exportTimeline()).toContain('未测到');
+    expect(exportTimeline()).toContain('这段时间是健康的');
   });
 
   it('未测到按键时导出不报错并给出下一步提示', () => {

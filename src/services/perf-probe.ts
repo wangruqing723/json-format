@@ -69,6 +69,21 @@ const inputs: PerfInput[] = [];
 let lastActivityAt = -Infinity;
 const ACTIVITY_WINDOW_MS = 2_000;
 
+/**
+ * 卡顿自动锁定。
+ *
+ * 时间线是环形缓冲、极值榜只留最慢的若干条，所以卡顿过后继续操作会把证据挤掉 ——
+ * 上一轮就是这样：面板里只剩「打开面板」那次 45ms，真正的卡顿早被冲走了。
+ * 这里一旦测到超过阈值的按键延迟，就把当时的时间线窗口整段冻结下来，
+ * 后续操作不再覆盖，用户回头打开面板仍能看到现场。
+ */
+const CAPTURE_THRESHOLD_MS = 150;
+let captured: { input: PerfInput; window: PerfEvent[] } | null = null;
+
+export function capturedFreeze(): { input: PerfInput; window: PerfEvent[] } | null {
+  return captured;
+}
+
 function append(event: PerfEvent): void {
   timeline.push(event);
   if (timeline.length > TIMELINE_CAPACITY) timeline.splice(0, timeline.length - TIMELINE_CAPACITY);
@@ -93,11 +108,23 @@ export function trackInputLatency(key: string): void {
   if (typeof requestAnimationFrame === 'undefined') return;
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      const ms = now() - start;
-      append({ label: `⌨︎ 按键到画面 ${key}`, at: now() - origin, ms });
-      push(inputs, { key, ms, at: start - origin });
+      recordInputLatency(key, now() - start, start - origin);
     });
   });
+}
+
+/**
+ * 落账一次交互延迟，超阈值则锁定现场。单独抽出是为了可测 ——
+ * 假定时器会把嵌套的第二层 rAF 也在同一次推进里跑掉，凑不出「慢帧」。
+ */
+export function recordInputLatency(key: string, ms: number, at = now() - origin): void {
+  append({ label: `⌨︎ 按键到画面 ${key}`, at: now() - origin, ms });
+  const input: PerfInput = { key, ms, at };
+  push(inputs, input);
+  // 只锁第一次：卡顿现场越早越干净，后面的会被反复操作污染。
+  if (ms >= CAPTURE_THRESHOLD_MS && !captured) {
+    captured = { input, window: windowAround(at, ms, 3_000, 1_500) };
+  }
 }
 
 function now(): number {
@@ -172,9 +199,15 @@ export function timelineAroundWorstBlock(beforeMs = 2_500, afterMs = 600): PerfE
  * 结果取到的是空闲期假阳性，白跑一轮。
  */
 export function timelineAroundWorstInput(beforeMs = 400, afterMs = 2_500): PerfEvent[] {
+  // 有锁定现场就优先给它 —— 那才是要定位的对象，而非事后操作里最慢的那次。
+  if (captured) return captured.window;
   const worst = worstInput();
   if (!worst) return [];
-  return timeline.filter((event) => event.at >= worst.at - beforeMs && event.at <= worst.at + worst.ms + afterMs);
+  return windowAround(worst.at, worst.ms, beforeMs, afterMs);
+}
+
+function windowAround(at: number, ms: number, beforeMs: number, afterMs: number): PerfEvent[] {
+  return timeline.filter((event) => event.at >= at - beforeMs && event.at <= at + ms + afterMs);
 }
 
 export function worstInput(): PerfInput | undefined {
@@ -187,10 +220,14 @@ export function perfInputs(): PerfInput[] {
 
 /** 导出为纯文本，便于整段贴出来 —— 密集数据截图容易看漏。 */
 export function exportTimeline(): string {
-  const input = worstInput();
-  const head = input
-    ? `最慢按键 ${input.key}：${input.ms.toFixed(0)}ms 到画面 @ ${(input.at / 1000).toFixed(1)}s`
-    : '未测到按键（请在编辑器里打字后再导出）';
+  const input = captured?.input ?? worstInput();
+  // 明确说清有没有抓到卡顿：上一轮导出只给了「最慢 45ms」，看不出那是健康还是卡顿，
+  // 白跑一轮才发现是没复现。
+  const head = !input
+    ? '未测到按键（请在编辑器里打字后再导出）'
+    : captured
+      ? `✅ 已锁定卡顿现场：${captured.input.key} ${captured.input.ms.toFixed(0)}ms 到画面 @ ${(captured.input.at / 1000).toFixed(1)}s`
+      : `⚠︎ 未测到 ≥${CAPTURE_THRESHOLD_MS}ms 的卡顿（这段时间是健康的）。最慢按键 ${input.key}：${input.ms.toFixed(0)}ms @ ${(input.at / 1000).toFixed(1)}s`;
   const throttled = timeline.filter((event) => event.label.startsWith('⏱')).length;
   const rows = timelineAroundWorstInput().map((event) => {
     const ms = event.ms === undefined ? '' : ` ${event.ms.toFixed(1)}ms`;
@@ -258,10 +295,31 @@ export function startLongTaskObserver(): () => void {
   }
 }
 
+/**
+ * 全局交互延迟监测。
+ *
+ * 上一轮只在编辑器 keydown 上插桩，于是「点工具栏按钮」「切标签」「格式化」
+ * 之后的卡顿一律测不到 —— 而用户未必是在打字时卡的。这里在 document 上捕获
+ * 所有交互，统一按同一口径量到画面更新。
+ */
+export function startInteractionProbe(): () => void {
+  if (typeof document === 'undefined') return () => undefined;
+  const onPointer = (event: Event) => {
+    const target = event.target;
+    const label = target instanceof Element
+      ? target.closest('button,[role="menuitem"],[role="tab"],[data-tree-row]')?.textContent?.trim().slice(0, 18)
+      : undefined;
+    trackInputLatency(`点击${label ? `:${label}` : ''}`);
+  };
+  document.addEventListener('pointerdown', onPointer, true);
+  return () => document.removeEventListener('pointerdown', onPointer, true);
+}
+
 export function resetPerf(): void {
   blocks.length = 0;
   spans.length = 0;
   timeline.length = 0;
   inputs.length = 0;
   lastActivityAt = -Infinity;
+  captured = null;
 }

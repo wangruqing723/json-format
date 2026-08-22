@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   exportTimeline,
+  capturedFreeze,
   perfInputs,
   perfSnapshot,
   resetPerf,
@@ -26,6 +27,7 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
   const [data, setData] = useState<{ blocks: PerfBlock[]; spans: PerfSpan[] }>({ blocks: [], spans: [] });
   const [window_, setWindow] = useState<PerfEvent[]>([]);
   const [inputs, setInputs] = useState<PerfInput[]>([]);
+  const [captured, setCaptured] = useState<{ input: PerfInput } | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -34,6 +36,7 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
       setData(perfSnapshot());
       setInputs(perfInputs());
       setWindow(timelineAroundWorstInput());
+      setCaptured(capturedFreeze());
     };
     refresh();
     const timer = window.setInterval(refresh, 600);
@@ -59,12 +62,17 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
       <div className="perf-panel-head">
         <strong>卡顿实测</strong>
         <button type="button" onClick={() => void copy()}>{copied ? '已复制' : '复制全部'}</button>
-        <button type="button" onClick={() => { resetPerf(); setData({ blocks: [], spans: [] }); setWindow([]); setInputs([]); }}>清空</button>
+        <button type="button" onClick={() => { resetPerf(); setData({ blocks: [], spans: [] }); setWindow([]); setInputs([]); setCaptured(null); }}>清空</button>
         <button type="button" onClick={onClose}>关闭</button>
       </div>
       <div className="perf-panel-body">
+        <p className={`perf-verdict${captured ? ' is-caught' : ''}`}>
+          {captured
+            ? `✅ 已锁定卡顿现场：${captured.input.key} ${captured.input.ms.toFixed(0)}ms @ ${(captured.input.at / 1000).toFixed(1)}s —— 点「复制全部」发出来`
+            : `尚未测到 ≥150ms 的卡顿。继续操作直到卡顿出现，现场会自动锁定（已采样 ${inputs.length} 次交互）`}
+        </p>
         <section>
-          <h4>按键到画面（最慢 {inputs.length} 次）</h4>
+          <h4>交互到画面（最慢 {inputs.length} 次）</h4>
           {inputs.length === 0 ? <p>在编辑器里打字后显示</p> : (
             <ul>
               {inputs.map((input, index) => (
@@ -74,7 +82,7 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
           )}
         </section>
         <section>
-          <h4>最慢那次按键前后的时间线（{window_.length} 条）</h4>
+          <h4>{captured ? '锁定的卡顿现场' : '最慢那次交互前后'}的时间线（{window_.length} 条）</h4>
           {window_.length === 0 ? <p>暂无数据</p> : (
             <ul className="perf-timeline">
               {window_.map((event, index) => (

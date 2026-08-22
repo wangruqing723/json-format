@@ -2156,6 +2156,8 @@ select {
 .perf-timeline li b { min-width: 58px; text-align: right; }
 .perf-timeline li.is-block { background: var(--accent-soft); }
 .perf-timeline li.is-block code { color: var(--accent); font-weight: 700; }
+.perf-verdict { margin: 8px 0 2px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-muted); background: var(--panel-subtle); line-height: 1.45; }
+.perf-verdict.is-caught { border-color: var(--accent); color: var(--text); background: var(--accent-soft); font-weight: 600; }
 
 .table-backdrop { z-index: 20; }
 .table-dialog { display: flex; width: min(900px, calc(100vw - 32px)); max-height: min(720px, calc(100vh - 32px)); flex-direction: column; overflow: hidden; border-radius: 12px; }
