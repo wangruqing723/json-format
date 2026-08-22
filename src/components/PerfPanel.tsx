@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import {
   exportTimeline,
+  perfInputs,
   perfSnapshot,
   resetPerf,
-  timelineAroundWorstBlock,
+  timelineAroundWorstInput,
   type PerfBlock,
   type PerfEvent,
+  type PerfInput,
   type PerfSpan,
 } from '../services/perf-probe';
 
@@ -23,13 +25,15 @@ export interface PerfPanelProps {
 export function PerfPanel({ open, onClose }: PerfPanelProps) {
   const [data, setData] = useState<{ blocks: PerfBlock[]; spans: PerfSpan[] }>({ blocks: [], spans: [] });
   const [window_, setWindow] = useState<PerfEvent[]>([]);
+  const [inputs, setInputs] = useState<PerfInput[]>([]);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     const refresh = () => {
       setData(perfSnapshot());
-      setWindow(timelineAroundWorstBlock());
+      setInputs(perfInputs());
+      setWindow(timelineAroundWorstInput());
     };
     refresh();
     const timer = window.setInterval(refresh, 600);
@@ -55,16 +59,26 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
       <div className="perf-panel-head">
         <strong>卡顿实测</strong>
         <button type="button" onClick={() => void copy()}>{copied ? '已复制' : '复制全部'}</button>
-        <button type="button" onClick={() => { resetPerf(); setData({ blocks: [], spans: [] }); setWindow([]); }}>清空</button>
+        <button type="button" onClick={() => { resetPerf(); setData({ blocks: [], spans: [] }); setWindow([]); setInputs([]); }}>清空</button>
         <button type="button" onClick={onClose}>关闭</button>
       </div>
       <div className="perf-panel-body">
         <section>
-          <h4>最严重卡顿前后的时间线（{window_.length} 条）</h4>
-          {window_.length === 0 ? <p>暂未测到卡顿</p> : (
+          <h4>按键到画面（最慢 {inputs.length} 次）</h4>
+          {inputs.length === 0 ? <p>在编辑器里打字后显示</p> : (
+            <ul>
+              {inputs.map((input, index) => (
+                <li key={index}><b>{input.ms.toFixed(0)} ms</b><code>{input.key}</code><span>{(input.at / 1000).toFixed(1)}s</span></li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section>
+          <h4>最慢那次按键前后的时间线（{window_.length} 条）</h4>
+          {window_.length === 0 ? <p>暂无数据</p> : (
             <ul className="perf-timeline">
               {window_.map((event, index) => (
-                <li key={index} className={event.label.startsWith('⚠') ? 'is-block' : undefined}>
+                <li key={index} className={event.label.startsWith('⚠') || event.label.startsWith('⌨') ? 'is-block' : undefined}>
                   <span>{(event.at / 1000).toFixed(3)}s</span>
                   <code>{event.label}</code>
                   <b>{event.ms === undefined ? '' : `${event.ms.toFixed(1)} ms`}</b>
@@ -74,8 +88,8 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
           )}
         </section>
         <section>
-          <h4>主线程卡住（最慢 {data.blocks.length} 次）</h4>
-          {data.blocks.length === 0 ? <p>暂未测到 ≥120ms 的卡顿</p> : (
+          <h4>活动期主线程卡住（最慢 {data.blocks.length} 次）</h4>
+          {data.blocks.length === 0 ? <p>暂未测到（空闲期的定时器节流已剔除）</p> : (
             <ul>
               {data.blocks.map((block, index) => (
                 <li key={index}><b>{block.ms.toFixed(0)} ms</b><span>{seconds(block.at)}</span></li>
@@ -94,7 +108,7 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
           )}
         </section>
       </div>
-      <p className="perf-panel-hint">复现卡顿后点「复制全部」，把文本整段贴出来。</p>
+      <p className="perf-panel-hint">在编辑器里敲到卡顿后点「复制全部」，把文本整段贴出来。</p>
     </div>
   );
 }

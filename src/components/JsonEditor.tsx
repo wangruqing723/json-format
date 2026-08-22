@@ -25,7 +25,7 @@ import {
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { beginSpan, mark } from '../services/perf-probe';
+import { beginSpan, trackInputLatency } from '../services/perf-probe';
 
 export interface EditorDiagnostic {
   message: string;
@@ -236,7 +236,8 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
         EditorView.domEventHandlers({
           // 打点按键，才能判断卡顿是否发生在按键时刻，还是与输入无关。
           keydown: (event) => {
-            mark(`keydown:${event.key === 'Enter' ? 'Enter' : event.key.length === 1 ? 'char' : event.key}`);
+            // 量到画面真的更新为止，这才是用户感受到的「卡」。
+            trackInputLatency(event.key === 'Enter' ? 'Enter' : event.key.length === 1 ? 'char' : event.key);
             return false;
           },
         }),

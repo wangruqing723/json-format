@@ -50,6 +50,25 @@ export interface PerfEvent {
 
 const timeline: PerfEvent[] = [];
 
+/**
+ * 按键到画面更新的延迟 —— 用户真正感受到的「卡」。
+ *
+ * 看门狗那套（定时器迟到量）在 macOS 上不可用：实测迟到量精确落在 750ms 左右，
+ * 换算下来定时器实际每 1000ms 才触发一次，是系统把定时器合并到 1Hz，
+ * 而非主线程被占住。那些「最严重卡顿」全部发生在空闲期（窗口内没有 keydown），
+ * 是假阳性。输入延迟由 DOM 事件与 rAF 驱动，不受这种节流影响。
+ */
+export interface PerfInput {
+  key: string;
+  ms: number;
+  at: number;
+}
+
+const inputs: PerfInput[] = [];
+/** 最近一次用户活动时刻，用于把空闲期的定时器节流从卡顿里剔除。 */
+let lastActivityAt = -Infinity;
+const ACTIVITY_WINDOW_MS = 2_000;
+
 function append(event: PerfEvent): void {
   timeline.push(event);
   if (timeline.length > TIMELINE_CAPACITY) timeline.splice(0, timeline.length - TIMELINE_CAPACITY);
@@ -58,6 +77,27 @@ function append(event: PerfEvent): void {
 /** 记录一个瞬时事件（按键、Worker 新建之类），不带耗时。 */
 export function mark(label: string): void {
   append({ label, at: now() - origin });
+}
+
+/**
+ * 量一次按键到画面更新的延迟。在 keydown 里调用。
+ *
+ * 两层 rAF：第一层回调在绘制前执行，第二层意味着上一帧已经绘制完成 ——
+ * 所以测出来的是「按下这个键，到屏幕真的变了」的整段时间，包含 JS、
+ * 样式重算、布局、绘制，也包含进程被系统唤醒的等待。
+ */
+export function trackInputLatency(key: string): void {
+  const start = now();
+  lastActivityAt = start;
+  append({ label: `keydown:${key}`, at: start - origin });
+  if (typeof requestAnimationFrame === 'undefined') return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const ms = now() - start;
+      append({ label: `⌨︎ 按键到画面 ${key}`, at: now() - origin, ms });
+      push(inputs, { key, ms, at: start - origin });
+    });
+  });
 }
 
 function now(): number {
@@ -100,10 +140,18 @@ export function beginSpan(name: string): () => void {
  */
 export function recordLateness(actual: number, expected: number): number {
   const late = actual - expected;
-  if (late >= BLOCK_THRESHOLD_MS) {
-    push(blocks, { ms: late, at: actual - origin });
-    append({ label: '⚠︎ 主线程卡住', at: actual - origin, ms: late });
+  if (late < BLOCK_THRESHOLD_MS) return actual;
+
+  // 空闲期的迟到不算卡顿：macOS 会把定时器合并到 1Hz，迟到量稳定在 750ms 左右
+  // （250ms 间隔 → 实测 1000ms 触发）。上一版把这些全记成「主线程卡住」，
+  // 于是最严重的几次全是空闲期假阳性，窗口里连 keydown 都没有。
+  const idle = actual - lastActivityAt > ACTIVITY_WINDOW_MS;
+  if (idle) {
+    append({ label: `⏱ 定时器被节流（空闲，实际间隔约 ${(late + 250).toFixed(0)}ms）`, at: actual - origin, ms: late });
+    return actual;
   }
+  push(blocks, { ms: late, at: actual - origin });
+  append({ label: '⚠︎ 主线程卡住', at: actual - origin, ms: late });
   return actual;
 }
 
@@ -119,17 +167,41 @@ export function timelineAroundWorstBlock(beforeMs = 2_500, afterMs = 600): PerfE
   return timeline.filter((event) => event.at >= from && event.at <= to);
 }
 
+/**
+ * 取最慢那次按键前后的事件。这是定位的主视图 —— 上一版围绕看门狗取窗口，
+ * 结果取到的是空闲期假阳性，白跑一轮。
+ */
+export function timelineAroundWorstInput(beforeMs = 400, afterMs = 2_500): PerfEvent[] {
+  const worst = worstInput();
+  if (!worst) return [];
+  return timeline.filter((event) => event.at >= worst.at - beforeMs && event.at <= worst.at + worst.ms + afterMs);
+}
+
+export function worstInput(): PerfInput | undefined {
+  return [...inputs].sort((left, right) => right.ms - left.ms)[0];
+}
+
+export function perfInputs(): PerfInput[] {
+  return [...inputs].sort((left, right) => right.ms - left.ms).slice(0, 12);
+}
+
 /** 导出为纯文本，便于整段贴出来 —— 密集数据截图容易看漏。 */
 export function exportTimeline(): string {
-  const worst = [...blocks].sort((left, right) => right.ms - left.ms)[0];
-  const head = worst
-    ? `最严重卡顿 ${worst.ms.toFixed(0)}ms @ ${(worst.at / 1000).toFixed(1)}s`
-    : '未测到卡顿';
-  const rows = timelineAroundWorstBlock().map((event) => {
+  const input = worstInput();
+  const head = input
+    ? `最慢按键 ${input.key}：${input.ms.toFixed(0)}ms 到画面 @ ${(input.at / 1000).toFixed(1)}s`
+    : '未测到按键（请在编辑器里打字后再导出）';
+  const throttled = timeline.filter((event) => event.label.startsWith('⏱')).length;
+  const rows = timelineAroundWorstInput().map((event) => {
     const ms = event.ms === undefined ? '' : ` ${event.ms.toFixed(1)}ms`;
     return `${(event.at / 1000).toFixed(3)}s  ${event.label}${ms}`;
   });
-  return [head, `窗口内事件 ${rows.length} 条`, ...rows].join('\n');
+  return [
+    head,
+    `输入延迟样本 ${inputs.length} 个，活动期卡顿 ${blocks.length} 次，空闲期定时器节流 ${throttled} 次`,
+    `窗口内事件 ${rows.length} 条`,
+    ...rows,
+  ].join('\n');
 }
 
 /**
@@ -190,4 +262,6 @@ export function resetPerf(): void {
   blocks.length = 0;
   spans.length = 0;
   timeline.length = 0;
+  inputs.length = 0;
+  lastActivityAt = -Infinity;
 }
