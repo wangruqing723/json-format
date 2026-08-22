@@ -26,7 +26,7 @@ import {
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { beginSpan, measureEnterPhases, trackInputLatency } from '../services/perf-probe';
+import { beginSpan, measureEnterPhases } from '../services/perf-probe';
 
 export interface EditorDiagnostic {
   message: string;
@@ -245,16 +245,6 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
         themeCompartment.of(editorTheme(theme)),
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
         EditorView.contentAttributes.of({ 'aria-label': ariaLabel, spellcheck: 'false' }),
-        EditorView.domEventHandlers({
-          // 打点按键，才能判断卡顿是否发生在按键时刻，还是与输入无关。
-          keydown: (event) => {
-            // 回车交给下面的专用分解探针，这里跳过以免同一次按键被记两笔。
-            if (event.key === 'Enter') return false;
-            // 量到画面真的更新为止，这才是用户感受到的「卡」。
-            trackInputLatency(event.key.length === 1 ? 'char' : event.key);
-            return false;
-          },
-        }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current?.(update.state.doc.toString());
           if (update.selectionSet || update.docChanged) {

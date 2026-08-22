@@ -68,6 +68,8 @@ const inputs: PerfInput[] = [];
 /** 最近一次用户活动时刻，用于把空闲期的定时器节流从卡顿里剔除。 */
 let lastActivityAt = -Infinity;
 const ACTIVITY_WINDOW_MS = 2_000;
+/** 是否正处于输入法组合中。回车在组合中是「确认候选」，与普通回车是两条路径。 */
+let composing = false;
 
 /**
  * 卡顿自动锁定。
@@ -170,9 +172,13 @@ export function recordLateness(actual: number, expected: number): number {
   if (late < BLOCK_THRESHOLD_MS) return actual;
 
   // 空闲期的迟到不算卡顿：macOS 会把定时器合并到 1Hz，迟到量稳定在 750ms 左右
-  // （250ms 间隔 → 实测 1000ms 触发）。上一版把这些全记成「主线程卡住」，
-  // 于是最严重的几次全是空闲期假阳性，窗口里连 keydown 都没有。
-  const idle = actual - lastActivityAt > ACTIVITY_WINDOW_MS;
+  // （250ms 间隔 → 实测 1000ms 触发）。
+  //
+  // 判定必须用「预期触发时刻」而非「实际触发时刻」：卡顿期间看门狗根本跑不了，
+  // 是卡顿本身把 actual 推远的。若按 actual 判，按键后立刻卡 10 秒会算出
+  // 10000 > 2000 而被丢成空闲 —— 越严重的卡顿越会被误判，这正是几十秒的卡顿
+  // 一次都没抓到的原因。按 expected 判则是 250 ≤ 2000，正确归为活动期卡顿。
+  const idle = expected - lastActivityAt > ACTIVITY_WINDOW_MS;
   if (idle) {
     append({ label: `⏱ 定时器被节流（空闲，实际间隔约 ${(late + 250).toFixed(0)}ms）`, at: actual - origin, ms: late });
     return actual;
@@ -347,7 +353,47 @@ export function startInteractionProbe(): () => void {
     trackInputLatency(`点击${label ? `:${label}` : ''}`);
   };
   document.addEventListener('pointerdown', onPointer, true);
-  return () => document.removeEventListener('pointerdown', onPointer, true);
+  document.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('compositionstart', onComposition, true);
+  document.addEventListener('compositionend', onComposition, true);
+  document.addEventListener('beforeinput', onBeforeInput, true);
+  return () => {
+    document.removeEventListener('pointerdown', onPointer, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('compositionstart', onComposition, true);
+    document.removeEventListener('compositionend', onComposition, true);
+    document.removeEventListener('beforeinput', onBeforeInput, true);
+  };
+}
+
+/**
+ * 按键必须在原生捕获阶段量，不能挂在 CodeMirror 的 domEventHandlers 上。
+ *
+ * CodeMirror 的 handleEvent 先过 ignoreDuringComposition，被它拦下的事件
+ * 一个 handler 都不会跑（domEventHandlers 和 keymap 一起被挡）。而它对
+ * Safari 有专门分支：compositionend 后 100ms 内的键事件直接丢弃，因为
+ * Safari 会把 compositionend 和 keydown 的顺序发颠倒。macOS 的 WKWebView
+ * 正是 browser.safari 分支，中文输入法用回车确认候选就撞在这条路上 ——
+ * 那是目前唯一还没被量到的回车路径，也是最可疑的一条。
+ *
+ * 因此判读时间线要看两条线是否成对：
+ *   有 keydown:Enter 却没有「⏎ 回车分解」→ 这次回车被 CodeMirror 丢了，走的是输入法路径。
+ *   两条都有 → 走的是普通 keymap 路径，阶段分解的数字可信。
+ */
+function onKeyDown(event: KeyboardEvent): void {
+  const key = event.key.length === 1 ? 'char' : event.key;
+  trackInputLatency(composing ? `${key}(组合中)` : key);
+}
+
+function onComposition(event: Event): void {
+  composing = event.type !== 'compositionend';
+  mark(`输入法:${event.type}`);
+}
+
+function onBeforeInput(event: Event): void {
+  // 输入法确认、粘贴、换行都会先发 beforeinput。keydown 被丢掉时，
+  // 这里的 inputType 是唯一能说明「实际插入了什么」的证据。
+  mark(`beforeinput:${(event as InputEvent).inputType}`);
 }
 
 export function resetPerf(): void {

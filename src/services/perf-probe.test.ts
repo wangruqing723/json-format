@@ -9,6 +9,7 @@ import {
   recordLateness,
   recordSpan,
   resetPerf,
+  startInteractionProbe,
   startWatchdog,
   timelineAroundWorstBlock,
   timelineAroundWorstInput,
@@ -87,6 +88,20 @@ describe('perf-probe', () => {
     const labels = timelineAroundWorstBlock().map((event) => event.label);
     expect(labels).toContain('fast');
     expect(labels).toContain('⚠︎ 主线程卡住');
+  });
+
+  it('按键后立刻卡很久仍记为卡顿：不能因卡顿本身把实际时刻推远就判成空闲', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+    trackInputLatency('Enter');
+    const at = performance.now();
+    // 按键后主线程被占住 10 秒：看门狗预期 at+250 触发，实际拖到 at+10250 才跑。
+    // 若按「实际时刻距上次活动」判定，会算出 10250 > 2000 而误判成空闲期节流 ——
+    // 越严重的卡顿越容易被丢掉，正是几十秒卡顿一次都没抓到的原因。
+    recordLateness(at + 10_250, at + 250);
+
+    const { blocks } = perfSnapshot();
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].ms).toBe(10_000);
   });
 
   it('刚有按键时的迟到仍记为卡顿：那时候真的是主线程被占住', () => {
