@@ -296,6 +296,41 @@ export function startLongTaskObserver(): () => void {
 }
 
 /**
+ * 回车键的阶段分解。
+ *
+ * 用户确认卡顿只由回车触发（打字、格式化、修复、去除换行都不卡）。回车与普通字符
+ * 的区别是它走 insertNewlineAndIndent（要访问语法树算缩进）且会改变行数。
+ * 本地在 jsdom 里实测：非法 JSON 下建树与命令执行都是亚毫秒，所以代价不在状态层，
+ * 而在 jsdom 不做的那层。这里把回车拆成四段，直接问「时间花在哪一段」：
+ *   cmd    命令执行（状态计算，含语法树访问）
+ *   dom    view.update 的 DOM 写入
+ *   layout 强制同步布局（读 offsetHeight 触发）
+ *   paint  到下一帧真正绘制
+ */
+export function measureEnterPhases(runCommand: () => void, host: HTMLElement | null): void {
+  const t0 = now();
+  runCommand();
+  const t1 = now();
+  // 读一次布局属性强制 WebKit 同步完成布局，把这部分代价单独归出来。
+  const height = host?.offsetHeight ?? 0;
+  const t2 = now();
+  if (typeof requestAnimationFrame === 'undefined') return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const t3 = now();
+      const parts = [
+        `cmd ${(t1 - t0).toFixed(1)}`,
+        `layout ${(t2 - t1).toFixed(1)}`,
+        `paint ${(t3 - t2).toFixed(1)}`,
+        `h=${height}`,
+      ].join(' | ');
+      append({ label: `⏎ 回车分解: ${parts}`, at: now() - origin, ms: t3 - t0 });
+      recordInputLatency('Enter', t3 - t0, t0 - origin);
+    });
+  });
+}
+
+/**
  * 全局交互延迟监测。
  *
  * 上一轮只在编辑器 keydown 上插桩，于是「点工具栏按钮」「切标签」「格式化」

@@ -3,12 +3,13 @@ import {
   history,
   historyKeymap,
   indentWithTab,
+  insertNewlineAndIndent,
 } from '@codemirror/commands';
 import { json } from '@codemirror/lang-json';
 import { bracketMatching, foldGutter, HighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language';
 import { Diagnostic, lintGutter, setDiagnostics } from '@codemirror/lint';
 import { openSearchPanel, search, SearchCursor, searchKeymap } from '@codemirror/search';
-import { Compartment, EditorState, Transaction } from '@codemirror/state';
+import { Compartment, EditorState, Prec, Transaction } from '@codemirror/state';
 import {
   Decoration,
   drawSelection,
@@ -25,7 +26,7 @@ import {
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { beginSpan, trackInputLatency } from '../services/perf-probe';
+import { beginSpan, measureEnterPhases, trackInputLatency } from '../services/perf-probe';
 
 export interface EditorDiagnostic {
   message: string;
@@ -229,6 +230,17 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
         search({ top: true }),
         // 选中/停在一个词上时，全文相同片段（含当前这处）统一高亮——用户要的「高亮相同项」。
         occurrenceHighlighter,
+        // 回车单独接管以做阶段分解：用户确认卡顿只由回车触发。这里仍执行原命令
+        // insertNewlineAndIndent，只是在它前后取时刻，行为与默认一致。
+        // Prec.high 保证排在 defaultKeymap 的 Enter 之前。
+        Prec.high(keymap.of([{
+          key: 'Enter',
+          run: (view) => {
+            let handled = false;
+            measureEnterPhases(() => { handled = insertNewlineAndIndent(view); }, view.dom);
+            return handled;
+          },
+        }])),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
         themeCompartment.of(editorTheme(theme)),
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
@@ -236,8 +248,10 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
         EditorView.domEventHandlers({
           // 打点按键，才能判断卡顿是否发生在按键时刻，还是与输入无关。
           keydown: (event) => {
+            // 回车交给下面的专用分解探针，这里跳过以免同一次按键被记两笔。
+            if (event.key === 'Enter') return false;
             // 量到画面真的更新为止，这才是用户感受到的「卡」。
-            trackInputLatency(event.key === 'Enter' ? 'Enter' : event.key.length === 1 ? 'char' : event.key);
+            trackInputLatency(event.key.length === 1 ? 'char' : event.key);
             return false;
           },
         }),
