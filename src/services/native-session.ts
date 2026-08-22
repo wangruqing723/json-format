@@ -5,6 +5,7 @@ import {
   type PersistedWorkspaceSnapshot,
   type WorkspaceStore,
 } from '../stores/workspace';
+import { beginSpan } from './perf-probe';
 
 export const SESSION_DEBOUNCE_MS = 750;
 export const SESSION_MAX_WAIT_MS = 5_000;
@@ -364,12 +365,19 @@ function isValidNativeIdentifier(value: string): boolean {
   return /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
 
+// 落盘 IPC 单独计时：0.3.6 已把 Rust 侧命令挪出主线程，但 JS 侧序列化整份内容、
+// 等待响应仍在主线程上，需要实测确认这条路还剩多少代价。
 async function invokeTauri<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<T>(command, args);
+  const endInvoke = beginSpan(`ipc:${command}`);
+  try {
+    return await invoke<T>(command, args);
+  } finally {
+    endInvoke();
+  }
 }
 
 function getLegacyStorage(): Storage | null {

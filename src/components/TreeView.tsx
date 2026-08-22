@@ -12,6 +12,7 @@ import {
   type ExpandState,
   type FlatRow,
 } from '../core/tree-flatten';
+import { beginSpan } from '../services/perf-probe';
 import { openExternalUrl } from '../services/platform';
 import { Icon } from './Icon';
 
@@ -340,7 +341,15 @@ export const TreeView = forwardRef<TreeViewHandle, TreeViewProps>(function TreeV
   allowRemoteImages = false,
   onOpenExternal,
 }: TreeViewProps, ref) {
-  const rows = useMemo(() => root ? flattenTree(root, expandState, hiddenPaths) : [], [expandState, hiddenPaths, root]);
+  const rows = useMemo(() => {
+    if (!root) return [];
+    const endFlatten = beginSpan('tree-flatten');
+    try {
+      return flattenTree(root, expandState, hiddenPaths);
+    } finally {
+      endFlatten();
+    }
+  }, [expandState, hiddenPaths, root]);
   const virtual = useVirtualWindow(rows);
 
   useImperativeHandle(ref, () => ({
