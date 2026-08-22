@@ -1,4 +1,5 @@
 import type { WorkerOperation, WorkerRequest, WorkerResponse } from '../types';
+import { beginSpan } from './perf-probe';
 
 export type WorkerFactory = () => Worker;
 
@@ -44,6 +45,8 @@ export class JsonWorkerClient {
       source,
       ...(options ? { options } : {}),
     };
+    // new Worker() 立即返回，模块加载与首次执行是异步的，所以真正的代价要看往返。
+    const endTrip = beginSpan(`worker-trip:${operation}`);
     const response = new Promise<WorkerResponse>((resolve, reject) => {
       if (this.disposed) {
         reject(new WorkerExecutionError('JSON Worker 客户端已释放'));
@@ -70,7 +73,7 @@ export class JsonWorkerClient {
         );
       }
     });
-    return { requestId, response };
+    return { requestId, response: response.finally(endTrip) };
   }
 
   cancel(requestId: string): boolean {
@@ -90,7 +93,11 @@ export class JsonWorkerClient {
   }
 
   private createWorker(requestId: string): Worker {
+    // 每次请求都新建 Worker：打包版下这一步要经 tauri:// 自定义协议取模块再编译，
+    // 是与文档大小无关的固定开销，也是当前卡顿的首要嫌疑，故单独计时。
+    const endSpawn = beginSpan('worker-spawn');
     const worker = this.workerFactory();
+    endSpawn();
     worker.addEventListener('message', (event: MessageEvent<WorkerResponse>) => {
       this.handleMessage(requestId, event);
     });

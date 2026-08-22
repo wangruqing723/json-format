@@ -1,6 +1,6 @@
 [package]
 name = "json-forge"
-version = "0.3.6"
+version = "0.3.7"
 description = "A fast, offline JSON workbench"
 authors = ["JSON Forge contributors"]
 edition = "2021"
