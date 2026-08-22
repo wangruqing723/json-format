@@ -2151,6 +2151,11 @@ select {
 .perf-panel-body li code { flex: 1; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .perf-panel-body li span { color: var(--text-faint); }
 .perf-panel-hint { margin: 0; padding: 7px 12px; border-top: 1px solid var(--border); color: var(--text-muted); }
+.perf-timeline li { gap: 7px; }
+.perf-timeline li span { min-width: 54px; color: var(--text-faint); }
+.perf-timeline li b { min-width: 58px; text-align: right; }
+.perf-timeline li.is-block { background: var(--accent-soft); }
+.perf-timeline li.is-block code { color: var(--accent); font-weight: 700; }
 
 .table-backdrop { z-index: 20; }
 .table-dialog { display: flex; width: min(900px, calc(100vw - 32px)); max-height: min(720px, calc(100vh - 32px)); flex-direction: column; overflow: hidden; border-radius: 12px; }

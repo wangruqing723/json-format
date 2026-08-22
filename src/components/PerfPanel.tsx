@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react';
-import { perfSnapshot, resetPerf, type PerfBlock, type PerfSpan } from '../services/perf-probe';
+import {
+  exportTimeline,
+  perfSnapshot,
+  resetPerf,
+  timelineAroundWorstBlock,
+  type PerfBlock,
+  type PerfEvent,
+  type PerfSpan,
+} from '../services/perf-probe';
 
 export interface PerfPanelProps {
   open: boolean;
@@ -14,14 +22,29 @@ export interface PerfPanelProps {
  */
 export function PerfPanel({ open, onClose }: PerfPanelProps) {
   const [data, setData] = useState<{ blocks: PerfBlock[]; spans: PerfSpan[] }>({ blocks: [], spans: [] });
+  const [window_, setWindow] = useState<PerfEvent[]>([]);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    const refresh = () => setData(perfSnapshot());
+    const refresh = () => {
+      setData(perfSnapshot());
+      setWindow(timelineAroundWorstBlock());
+    };
     refresh();
     const timer = window.setInterval(refresh, 600);
     return () => window.clearInterval(timer);
   }, [open]);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(exportTimeline());
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   if (!open) return null;
 
@@ -31,10 +54,25 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
     <div className="perf-panel" role="dialog" aria-label="卡顿实测">
       <div className="perf-panel-head">
         <strong>卡顿实测</strong>
-        <button type="button" onClick={() => { resetPerf(); setData({ blocks: [], spans: [] }); }}>清空</button>
+        <button type="button" onClick={() => void copy()}>{copied ? '已复制' : '复制全部'}</button>
+        <button type="button" onClick={() => { resetPerf(); setData({ blocks: [], spans: [] }); setWindow([]); }}>清空</button>
         <button type="button" onClick={onClose}>关闭</button>
       </div>
       <div className="perf-panel-body">
+        <section>
+          <h4>最严重卡顿前后的时间线（{window_.length} 条）</h4>
+          {window_.length === 0 ? <p>暂未测到卡顿</p> : (
+            <ul className="perf-timeline">
+              {window_.map((event, index) => (
+                <li key={index} className={event.label.startsWith('⚠') ? 'is-block' : undefined}>
+                  <span>{(event.at / 1000).toFixed(3)}s</span>
+                  <code>{event.label}</code>
+                  <b>{event.ms === undefined ? '' : `${event.ms.toFixed(1)} ms`}</b>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
         <section>
           <h4>主线程卡住（最慢 {data.blocks.length} 次）</h4>
           {data.blocks.length === 0 ? <p>暂未测到 ≥120ms 的卡顿</p> : (
@@ -56,7 +94,7 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
           )}
         </section>
       </div>
-      <p className="perf-panel-hint">复现卡顿后把这两栏截图发出来即可定位。</p>
+      <p className="perf-panel-hint">复现卡顿后点「复制全部」，把文本整段贴出来。</p>
     </div>
   );
 }

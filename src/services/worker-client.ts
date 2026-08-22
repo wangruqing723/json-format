@@ -1,5 +1,5 @@
 import type { WorkerOperation, WorkerRequest, WorkerResponse } from '../types';
-import { beginSpan } from './perf-probe';
+import { beginSpan, mark } from './perf-probe';
 
 export type WorkerFactory = () => Worker;
 
@@ -98,6 +98,9 @@ export class JsonWorkerClient {
     const endSpawn = beginSpan('worker-spawn');
     const worker = this.workerFactory();
     endSpawn();
+    // 打点计数，用于判断 Worker 是否在累积（销毁不及时会造成内存压力，
+    // 而 GC 停顿测不出函数耗时，只会表现为主线程凭空卡住）。
+    mark(`worker+ (存活 ${this.pending.size + 1})`);
     worker.addEventListener('message', (event: MessageEvent<WorkerResponse>) => {
       this.handleMessage(requestId, event);
     });

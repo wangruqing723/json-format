@@ -25,6 +25,7 @@ import {
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { beginSpan, mark } from '../services/perf-probe';
 
 export interface EditorDiagnostic {
   message: string;
@@ -232,6 +233,13 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
         themeCompartment.of(editorTheme(theme)),
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
         EditorView.contentAttributes.of({ 'aria-label': ariaLabel, spellcheck: 'false' }),
+        EditorView.domEventHandlers({
+          // 打点按键，才能判断卡顿是否发生在按键时刻，还是与输入无关。
+          keydown: (event) => {
+            mark(`keydown:${event.key === 'Enter' ? 'Enter' : event.key.length === 1 ? 'char' : event.key}`);
+            return false;
+          },
+        }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current?.(update.state.doc.toString());
           if (update.selectionSet || update.docChanged) {
@@ -243,7 +251,17 @@ export const JsonEditor = forwardRef<JsonEditorHandle, JsonEditorProps>(function
       ],
     });
 
-    const view = new EditorView({ state, parent: hostRef.current });
+    // 包住 dispatch 计时：CodeMirror 内部的文档更新、装饰重算、DOM 写入都在这里面，
+    // 之前完全没插桩。上一版实测显示卡顿窗口内没有任何已插桩事件，这是首要盲区。
+    const view = new EditorView({
+      state,
+      parent: hostRef.current,
+      dispatchTransactions: (transactions, editorView) => {
+        const endDispatch = beginSpan('cm-dispatch');
+        editorView.update(transactions);
+        endDispatch();
+      },
+    });
     viewRef.current = view;
     return () => {
       view.destroy();
