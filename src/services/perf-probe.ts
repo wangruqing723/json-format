@@ -185,6 +185,13 @@ export function recordLateness(actual: number, expected: number): number {
   }
   push(blocks, { ms: late, at: actual - origin });
   append({ label: '⚠︎ 主线程卡住', at: actual - origin, ms: late });
+  // 阻塞现场同样要锁。上一轮抓到了活动期 1036ms 的阻塞，却因为只按按键延迟锁定，
+  // 现场被后续操作从环形缓冲里挤掉，面板显示「窗口内事件 0 条」——
+  // 卡顿期间往往一次按键都没记到（键事件被系统攒着），只按按键锁等于抓到了不留证据。
+  if (late >= CAPTURE_THRESHOLD_MS && !captured) {
+    const at = expected - origin;
+    captured = { input: { key: '主线程卡住', ms: late, at }, window: windowAround(at, late, 3_000, 1_500) };
+  }
   return actual;
 }
 
@@ -192,6 +199,19 @@ export function recordLateness(actual: number, expected: number): number {
  * 取最严重那次卡顿前后的事件。窗口起点往前多取一点：
  * 卡顿是「事后」才被发现的，占住主线程的活儿在它之前就开始了。
  */
+/**
+ * 取最值得看的那段现场：按键与主线程阻塞里谁更慢就取谁的窗口。
+ *
+ * 上一轮面板只看按键窗口，于是 1036ms 的阻塞抓到了、显示的却是 60ms 按键那一段，
+ * 而那段早被环形缓冲滚掉 → 「0 条」。卡顿时按键常常根本没记到，必须两者都看。
+ */
+export function worstWindow(): PerfEvent[] {
+  const input = worstInput();
+  const block = [...blocks].sort((left, right) => right.ms - left.ms)[0];
+  if (block && (!input || block.ms > input.ms)) return timelineAroundWorstBlock();
+  return timelineAroundWorstInput();
+}
+
 export function timelineAroundWorstBlock(beforeMs = 2_500, afterMs = 600): PerfEvent[] {
   const worst = [...blocks].sort((left, right) => right.ms - left.ms)[0];
   if (!worst) return [];
@@ -232,10 +252,10 @@ export function exportTimeline(): string {
   const head = !input
     ? '未测到按键（请在编辑器里打字后再导出）'
     : captured
-      ? `✅ 已锁定卡顿现场：${captured.input.key} ${captured.input.ms.toFixed(0)}ms 到画面 @ ${(captured.input.at / 1000).toFixed(1)}s`
+      ? `✅ 已锁定卡顿现场：${captured.input.key} ${captured.input.ms.toFixed(0)}ms${captured.input.key === '主线程卡住' ? '' : ' 到画面'} @ ${(captured.input.at / 1000).toFixed(1)}s`
       : `⚠︎ 未测到 ≥${CAPTURE_THRESHOLD_MS}ms 的卡顿（这段时间是健康的）。最慢按键 ${input.key}：${input.ms.toFixed(0)}ms @ ${(input.at / 1000).toFixed(1)}s`;
   const throttled = timeline.filter((event) => event.label.startsWith('⏱')).length;
-  const rows = timelineAroundWorstInput().map((event) => {
+  const rows = worstWindow().map((event) => {
     const ms = event.ms === undefined ? '' : ` ${event.ms.toFixed(1)}ms`;
     return `${(event.at / 1000).toFixed(3)}s  ${event.label}${ms}`;
   });

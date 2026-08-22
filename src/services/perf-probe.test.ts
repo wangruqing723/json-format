@@ -9,8 +9,8 @@ import {
   recordLateness,
   recordSpan,
   resetPerf,
-  startInteractionProbe,
   startWatchdog,
+  worstWindow,
   timelineAroundWorstBlock,
   timelineAroundWorstInput,
   trackInputLatency,
@@ -88,6 +88,24 @@ describe('perf-probe', () => {
     const labels = timelineAroundWorstBlock().map((event) => event.label);
     expect(labels).toContain('fast');
     expect(labels).toContain('⚠︎ 主线程卡住');
+  });
+
+  it('阻塞比按键更慢时，时间线取阻塞那一段，且现场被锁定', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+    trackInputLatency('char');
+    const at = performance.now();
+    recordSpan('卡顿窗口内的活儿', 1);
+    // 按键只慢 40ms，阻塞慢 1000ms —— 上一轮面板只看按键窗口，
+    // 于是取到的是早被环形缓冲滚掉的那一段，显示「0 条」。
+    recordInputLatency('char', 40);
+    recordLateness(at + 1_250, at + 250);
+
+    expect(worstWindow().map((event) => event.label)).toContain('卡顿窗口内的活儿');
+    const frozen = capturedFreeze();
+    expect(frozen).not.toBeNull();
+    expect(frozen!.input.key).toBe('主线程卡住');
+    expect(frozen!.input.ms).toBe(1_000);
+    expect(exportTimeline()).toContain('已锁定卡顿现场');
   });
 
   it('按键后立刻卡很久仍记为卡顿：不能因卡顿本身把实际时刻推远就判成空闲', () => {

@@ -5,7 +5,7 @@ import {
   perfInputs,
   perfSnapshot,
   resetPerf,
-  timelineAroundWorstInput,
+  worstWindow,
   type PerfBlock,
   type PerfEvent,
   type PerfInput,
@@ -35,7 +35,7 @@ export function PerfPanel({ open, onClose }: PerfPanelProps) {
     const refresh = () => {
       setData(perfSnapshot());
       setInputs(perfInputs());
-      setWindow(timelineAroundWorstInput());
+      setWindow(worstWindow());
       setCaptured(capturedFreeze());
     };
     refresh();
