@@ -123,6 +123,20 @@ export function SettingsDialog({ open, settings, onChange, onClose }: SettingsDi
             />
           </label>
 
+          <label className="setting-row" htmlFor="ime-compat-mode">
+            <span>
+              <strong>输入法兼容模式</strong>
+              <small>第三方输入法下编辑卡顿时开启：语法只用颜色区分，不加粗、不斜体</small>
+            </span>
+            <input
+              id="ime-compat-mode"
+              type="checkbox"
+              role="switch"
+              checked={settings.imeCompatMode}
+              onChange={(event) => onChange({ imeCompatMode: event.target.checked })}
+            />
+          </label>
+
           <label className="setting-row" htmlFor="remote-image-preview">
             <span>
               <strong>允许加载远程图片预览</strong>

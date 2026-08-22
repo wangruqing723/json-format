@@ -321,6 +321,18 @@ describe('workspace store', () => {
     expect(store.getState().settings.splitRatio).toBe(0.8);
   });
 
+  it('输入法兼容模式默认关闭，可切换，脏值被拒绝', () => {
+    const store = createStore();
+    expect(store.getState().settings.imeCompatMode).toBe(false);
+
+    store.getState().updateSettings({ imeCompatMode: true });
+    expect(store.getState().settings.imeCompatMode).toBe(true);
+
+    // 非布尔值不能把这个开关改成脏状态：它决定编辑器高亮配置
+    store.getState().updateSettings({ imeCompatMode: 'yes' as never });
+    expect(store.getState().settings.imeCompatMode).toBe(true);
+  });
+
   it('关闭会话恢复后不把文档内容写入 localStorage', () => {
     const store = createStore();
     const activeId = store.getState().activeDocumentId;

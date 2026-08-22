@@ -5,7 +5,6 @@ import {
   type PersistedWorkspaceSnapshot,
   type WorkspaceStore,
 } from '../stores/workspace';
-import { beginSpan } from './perf-probe';
 
 export const SESSION_DEBOUNCE_MS = 750;
 export const SESSION_MAX_WAIT_MS = 5_000;
@@ -372,12 +371,7 @@ async function invokeTauri<T>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
-  const endInvoke = beginSpan(`ipc:${command}`);
-  try {
-    return await invoke<T>(command, args);
-  } finally {
-    endInvoke();
-  }
+  return invoke<T>(command, args);
 }
 
 function getLegacyStorage(): Storage | null {

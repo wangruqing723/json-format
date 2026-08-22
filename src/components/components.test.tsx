@@ -563,6 +563,21 @@ describe('dialogs', () => {
     expect(onChange).toHaveBeenCalledWith({ indent: 4 });
   });
 
+  it('设置面板发出输入法兼容模式变更', () => {
+    const onChange = vi.fn();
+    render(
+      <SettingsDialog
+        open
+        settings={{ theme: 'system', indent: 2, sortKeys: false, restoreSession: true } as never}
+        onChange={onChange}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('switch', { name: /输入法兼容模式/ }));
+    expect(onChange).toHaveBeenCalledWith({ imeCompatMode: true });
+  });
+
   it('设置面板关闭后恢复触发点焦点', async () => {
     const trigger = document.createElement('button');
     document.body.append(trigger);
