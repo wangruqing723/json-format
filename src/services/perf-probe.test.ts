@@ -183,6 +183,22 @@ describe('perf-probe', () => {
     expect(exportTimeline()).toContain('已锁定卡顿现场');
   });
 
+  it('严重得多的卡顿可以顶替已锁定的现场，同量级噪声顶不掉', () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'setInterval', 'clearInterval', 'Date', 'performance', 'requestAnimationFrame'],
+    });
+    recordInputLatency('点击:复制全部', 300);
+    expect(capturedFreeze()!.input.key).toBe('点击:复制全部');
+
+    // 同量级的另一次卡顿顶不掉：现场要保持干净
+    recordInputLatency('char', 420);
+    expect(capturedFreeze()!.input.key).toBe('点击:复制全部');
+
+    // 但真正要抓的那种量级必须能进来 —— 否则一次误锁就废掉整轮
+    recordInputLatency('Enter', 12_000);
+    expect(capturedFreeze()!.input.key).toBe('Enter');
+  });
+
   it('全程健康时导出明说没测到卡顿，不让人误以为已定位', () => {
     vi.useFakeTimers({
       toFake: ['setTimeout', 'setInterval', 'clearInterval', 'Date', 'performance', 'requestAnimationFrame'],

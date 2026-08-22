@@ -123,10 +123,20 @@ export function recordInputLatency(key: string, ms: number, at = now() - origin)
   append({ label: `⌨︎ 按键到画面 ${key}`, at: now() - origin, ms });
   const input: PerfInput = { key, ms, at };
   push(inputs, input);
-  // 只锁第一次：卡顿现场越早越干净，后面的会被反复操作污染。
-  if (ms >= CAPTURE_THRESHOLD_MS && !captured) {
+  if (ms >= CAPTURE_THRESHOLD_MS && betterCapture(ms)) {
     captured = { input, window: windowAround(at, ms, 3_000, 1_500) };
   }
+}
+
+/**
+ * 该不该用这次卡顿顶替已锁定的现场。
+ *
+ * 原先「只锁第一次」，一次误锁就废掉整轮 —— 上一轮就被面板自己的复制按钮占了槽。
+ * 现在允许严重程度翻倍以上的卡顿顶替：几十秒的卡顿远超先前锁到的百毫秒级，
+ * 该让它进来；而反复操作产生的同量级噪声顶不掉，现场仍然干净。
+ */
+function betterCapture(ms: number): boolean {
+  return !captured || ms >= captured.input.ms * 2;
 }
 
 function now(): number {
@@ -188,7 +198,7 @@ export function recordLateness(actual: number, expected: number): number {
   // 阻塞现场同样要锁。上一轮抓到了活动期 1036ms 的阻塞，却因为只按按键延迟锁定，
   // 现场被后续操作从环形缓冲里挤掉，面板显示「窗口内事件 0 条」——
   // 卡顿期间往往一次按键都没记到（键事件被系统攒着），只按按键锁等于抓到了不留证据。
-  if (late >= CAPTURE_THRESHOLD_MS && !captured) {
+  if (late >= CAPTURE_THRESHOLD_MS && betterCapture(late)) {
     const at = expected - origin;
     captured = { input: { key: '主线程卡住', ms: late, at }, window: windowAround(at, late, 3_000, 1_500) };
   }
@@ -367,6 +377,13 @@ export function startInteractionProbe(): () => void {
   if (typeof document === 'undefined') return () => undefined;
   const onPointer = (event: Event) => {
     const target = event.target;
+    // 面板自己的点击不算用户交互。上一轮「复制全部」把主线程堵了 700~850ms
+    // （macOS 的 clipboard 写入是同步 IPC），锁定槽被它占掉，窗口里 6 条全是
+    // 面板点击 —— 探针把自己测了，真正要抓的回车卡顿反而没位置。
+    if (target instanceof Element && target.closest('.perf-panel')) {
+      mark('（面板自身操作，不计入）');
+      return;
+    }
     const label = target instanceof Element
       ? target.closest('button,[role="menuitem"],[role="tab"],[data-tree-row]')?.textContent?.trim().slice(0, 18)
       : undefined;
@@ -401,6 +418,7 @@ export function startInteractionProbe(): () => void {
  *   两条都有 → 走的是普通 keymap 路径，阶段分解的数字可信。
  */
 function onKeyDown(event: KeyboardEvent): void {
+  if (event.target instanceof Element && event.target.closest('.perf-panel')) return;
   const key = event.key.length === 1 ? 'char' : event.key;
   trackInputLatency(composing ? `${key}(组合中)` : key);
 }
