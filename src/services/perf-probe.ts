@@ -25,11 +25,40 @@ const BLOCK_THRESHOLD_MS = 120;
 const SPAN_THRESHOLD_MS = 8;
 const WATCHDOG_INTERVAL_MS = 250;
 const KEEP = 40;
+/** 时间线容量。只看卡顿前后几秒，不需要留更多。 */
+const TIMELINE_CAPACITY = 600;
 
 const origin = now();
 const blocks: PerfBlock[] = [];
 const spans: PerfSpan[] = [];
 let watchdogTimer: number | null = null;
+
+/**
+ * 事件时间线（环形缓冲）。
+ *
+ * 极值榜解决不了这次的问题：上一版实测显示卡顿在 286.8s，而所有极值都落在
+ * 169s–276s，对不上时刻，等于没定位。所以这里把每个事件都记下来 ——
+ * 卡顿发生后回看那个窗口，看里面到底跑了什么。若窗口内空无一物，
+ * 说明主线程不是被 JS 占住的（GC、样式重算、布局、绘制都测不到函数耗时），
+ * 那个「空」本身就是结论。
+ */
+export interface PerfEvent {
+  label: string;
+  at: number;
+  ms?: number;
+}
+
+const timeline: PerfEvent[] = [];
+
+function append(event: PerfEvent): void {
+  timeline.push(event);
+  if (timeline.length > TIMELINE_CAPACITY) timeline.splice(0, timeline.length - TIMELINE_CAPACITY);
+}
+
+/** 记录一个瞬时事件（按键、Worker 新建之类），不带耗时。 */
+export function mark(label: string): void {
+  append({ label, at: now() - origin });
+}
 
 function now(): number {
   return typeof performance === 'undefined' ? Date.now() : performance.now();
@@ -46,6 +75,9 @@ function push<T extends { ms: number }>(list: T[], entry: T): void {
 
 /** 记录一段已知耗时。 */
 export function recordSpan(name: string, ms: number): void {
+  // 时间线不设门槛：定位卡顿要的是「窗口内跑过什么」，
+  // 快的事件同样是证据（尤其当窗口内只有快事件时）。
+  append({ label: name, at: now() - origin, ms });
   if (ms < SPAN_THRESHOLD_MS) return;
   push(spans, { name, ms, at: now() - origin });
 }
@@ -68,8 +100,36 @@ export function beginSpan(name: string): () => void {
  */
 export function recordLateness(actual: number, expected: number): number {
   const late = actual - expected;
-  if (late >= BLOCK_THRESHOLD_MS) push(blocks, { ms: late, at: actual - origin });
+  if (late >= BLOCK_THRESHOLD_MS) {
+    push(blocks, { ms: late, at: actual - origin });
+    append({ label: '⚠︎ 主线程卡住', at: actual - origin, ms: late });
+  }
   return actual;
+}
+
+/**
+ * 取最严重那次卡顿前后的事件。窗口起点往前多取一点：
+ * 卡顿是「事后」才被发现的，占住主线程的活儿在它之前就开始了。
+ */
+export function timelineAroundWorstBlock(beforeMs = 2_500, afterMs = 600): PerfEvent[] {
+  const worst = [...blocks].sort((left, right) => right.ms - left.ms)[0];
+  if (!worst) return [];
+  const from = worst.at - worst.ms - beforeMs;
+  const to = worst.at + afterMs;
+  return timeline.filter((event) => event.at >= from && event.at <= to);
+}
+
+/** 导出为纯文本，便于整段贴出来 —— 密集数据截图容易看漏。 */
+export function exportTimeline(): string {
+  const worst = [...blocks].sort((left, right) => right.ms - left.ms)[0];
+  const head = worst
+    ? `最严重卡顿 ${worst.ms.toFixed(0)}ms @ ${(worst.at / 1000).toFixed(1)}s`
+    : '未测到卡顿';
+  const rows = timelineAroundWorstBlock().map((event) => {
+    const ms = event.ms === undefined ? '' : ` ${event.ms.toFixed(1)}ms`;
+    return `${(event.at / 1000).toFixed(3)}s  ${event.label}${ms}`;
+  });
+  return [head, `窗口内事件 ${rows.length} 条`, ...rows].join('\n');
 }
 
 /**
@@ -95,7 +155,39 @@ export function perfSnapshot(): { blocks: PerfBlock[]; spans: PerfSpan[] } {
   return { blocks: bySlowest(blocks), spans: bySlowest(spans) };
 }
 
+/**
+ * longtask 观察器。若 WebKit 支持，它能直接报出占住主线程 ≥50ms 的任务，
+ * 连 GC 与布局这类非 JS 停顿也算在内 —— 那正是当前插桩测不到的部分。
+ * 各家支持情况说法不一，故用 try 包住，不支持就静默跳过（时间线仍可用）。
+ */
+export function startLongTaskObserver(): () => void {
+  if (typeof PerformanceObserver === 'undefined') {
+    mark('longtask: 本环境不支持 PerformanceObserver');
+    return () => undefined;
+  }
+  try {
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const attribution = (entry as PerformanceEntry & {
+          attribution?: Array<{ name?: string; containerType?: string }>;
+        }).attribution;
+        const detail = attribution?.length
+          ? `:${attribution.map((item) => item.containerType ?? item.name ?? '?').join(',')}`
+          : '';
+        append({ label: `longtask${detail}`, at: entry.startTime - origin, ms: entry.duration });
+      }
+    });
+    observer.observe({ type: 'longtask', buffered: true });
+    mark('longtask: 观察器已启动');
+    return () => observer.disconnect();
+  } catch {
+    mark('longtask: 本环境不支持该类型');
+    return () => undefined;
+  }
+}
+
 export function resetPerf(): void {
   blocks.length = 0;
   spans.length = 0;
+  timeline.length = 0;
 }

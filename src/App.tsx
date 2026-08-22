@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ActionBar, type MoreAction } from './components/ActionBar';
 import { AboutDialog } from './components/AboutDialog';
 import { AppHeader, type WorkspaceView } from './components/AppHeader';
@@ -30,7 +30,7 @@ import {
 } from './core/tree-flatten';
 import { minifyJsonNode } from './core/json-transform';
 import { nodeAtPath } from './core/json-table';
-import { beginSpan, startWatchdog } from './services/perf-probe';
+import { beginSpan, startLongTaskObserver, startWatchdog } from './services/perf-probe';
 import { JsonWorkerClient, WorkerCancelledError } from './services/worker-client';
 import {
   listenForJsonDrops,
@@ -400,6 +400,16 @@ export function App() {
 
   // 看门狗常开：定时器迟到多久就是主线程被占住多久。卡顿后再打开面板也能看到已录数据。
   useEffect(() => startWatchdog(), []);
+  useEffect(() => startLongTaskObserver(), []);
+
+  // React 渲染 + 提交的耗时同样是盲区。渲染体里起表，useLayoutEffect 在提交后同步执行，
+  // 两者之差即「本次渲染到 DOM 落地」的全部代价。
+  const endRenderRef = useRef<(() => void) | null>(null);
+  endRenderRef.current = beginSpan('react-render+commit');
+  useLayoutEffect(() => {
+    endRenderRef.current?.();
+    endRenderRef.current = null;
+  });
 
   useEffect(() => {
     if (!isTauriRuntime() || !nativeSessionReady || nativeSessionBlockedRef.current) return;
